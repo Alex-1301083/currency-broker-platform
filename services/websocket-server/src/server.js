@@ -6,7 +6,8 @@ require("dotenv").config({
   path: path.resolve(__dirname, "../../../.env"),
 });
 
-const PORT = 5001;
+const PORT = process.env.PORT || 5001;
+
 
 const JWT_SECRET = process.env.JWT_SECRET;
 const MARKET_DATA_WS_SECRET =
