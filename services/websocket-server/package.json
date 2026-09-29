@@ -1,0 +1,16 @@
+{
+  "name": "currency-broker-websocket",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Currency Broker WebSocket Server",
+  "main": "src/server.js",
+  "scripts": {
+    "dev": "node --watch src/server.js",
+    "start": "node src/server.js"
+  },
+  "dependencies": {
+    "dotenv": "^18.0.3",
+    "jsonwebtoken": "^9.0.3",
+    "ws": "^8.18.3"
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "name": "currency-broker-platform",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Currency Broker and Exchange Platform",
+  "scripts": {
+    "dev:api": "npm --prefix services/api-server run dev",
+    "start:api": "npm --prefix services/api-server start",
+    "dev:provider": "node --watch services/provider-bridge/src/index.js",
+    "start:provider": "node services/provider-bridge/src/index.js",
+    "dev:websocket": "npm --prefix services/websocket-server run dev",
+    "dev:market": "npm --prefix services/market-data run dev",
+    "dev:client": "npm --prefix apps/client run dev",
+    "dev:admin": "npm --prefix apps/admin run dev"
+  },
+  "dependencies": {
+    "axios": "^1.20.0",
+    "dotenv": "^18.0.3",
+    "lucide-react": "^1.47.0",
+    "react-router-dom": "^7.18.4"
+  }
+}
