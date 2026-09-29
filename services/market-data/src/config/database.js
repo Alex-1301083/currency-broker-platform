@@ -2,40 +2,36 @@ const path = require("path");
 const dotenv = require("dotenv");
 const { Pool } = require("pg");
 
+// Local development ke liye root .env load karo.
+// Render par .env file na ho to koi error throw nahi karna.
 const rootEnvPath = path.resolve(
   __dirname,
   "../../../../.env",
 );
 
-const envResult = dotenv.config({
+dotenv.config({
   path: rootEnvPath,
 });
-
-if (envResult.error) {
-  throw new Error(
-    `Unable to load .env file: ${envResult.error.message}`,
-  );
-}
 
 const databaseUrl = process.env.DATABASE_URL;
 
 if (!databaseUrl) {
   throw new Error(
-    `DATABASE_URL is not loaded from: ${rootEnvPath}`,
+    "DATABASE_URL environment variable is missing.",
   );
 }
 
-const databaseConfig = new URL(databaseUrl);
-
 const pool = new Pool({
-  host: databaseConfig.hostname,
-  port: Number(databaseConfig.port || 5432),
-  user: decodeURIComponent(databaseConfig.username),
-  password: decodeURIComponent(databaseConfig.password),
-  database: databaseConfig.pathname.replace(
-    /^\//,
-    "",
-  ),
+  connectionString: databaseUrl,
+
+  // Render PostgreSQL ke liye production mein SSL.
+  // Local PostgreSQL ke liye SSL disable rahega.
+  ssl:
+    process.env.NODE_ENV === "production"
+      ? {
+          rejectUnauthorized: false,
+        }
+      : undefined,
 });
 
 pool.on("error", (error) => {
