@@ -13,7 +13,7 @@ const {
   startTwelveDataProvider,
 } = require("./providers/twelvedata.provider");
 
-const PORT = Number(process.env.PORT || 5002);
+const PORT = Number(process.env.MARKET_DATA_PORT || process.env.PORT || 5002);
 
 async function readRequestBody(
   req,
@@ -233,3 +233,4 @@ async function startMarketDataService() {
 }
 
 startMarketDataService();
+

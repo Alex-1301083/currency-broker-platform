@@ -1,6 +1,4 @@
-require("dotenv").config({
-  path: "C:/Users/Dell/OneDrive/Desktop/currency-broker-platform/.env",
-});
+require("dotenv").config({ path: require("path").resolve(__dirname, "../../../.env") });
 const http = require("http");
 
 const providerManager = require("./services/provider-manager");
@@ -13,7 +11,7 @@ const {
 
 const PRICE_INTERVAL = 1000;
 
-const PROVIDER_BRIDGE_PORT = Number(process.env.PORT || 5003);
+const PROVIDER_BRIDGE_PORT = Number(process.env.PROVIDER_BRIDGE_PORT || process.env.PORT || 5003);
 const PROVIDER_RECONNECT_INTERVAL = 5000;
 const PROVIDER_HEALTH_INTERVAL = 5000;
 
@@ -480,3 +478,6 @@ async function startProviderBridge() {
   }
 }
 startProviderBridge();
+
+
+

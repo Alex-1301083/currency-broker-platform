@@ -6,7 +6,7 @@ require("dotenv").config({
   path: path.resolve(__dirname, "../../../.env"),
 });
 
-const PORT = process.env.PORT || 5001;
+const PORT = Number(process.env.WS_PORT || process.env.PORT || 5001);
 
 
 const JWT_SECRET = process.env.JWT_SECRET;
@@ -546,3 +546,4 @@ module.exports = {
   wss,
   broadcast,
 };
+
