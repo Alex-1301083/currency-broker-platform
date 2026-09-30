@@ -13,11 +13,12 @@ const {
 
 const PRICE_INTERVAL = 1000;
 
-const PROVIDER_BRIDGE_PORT = 5003;
+const PROVIDER_BRIDGE_PORT = Number(process.env.PORT || 5003);
 const PROVIDER_RECONNECT_INTERVAL = 5000;
 const PROVIDER_HEALTH_INTERVAL = 5000;
 
-const MARKET_DATA_URL = "http://localhost:5002/internal/market-price";
+const MARKET_DATA_URL =
+  process.env.MARKET_DATA_URL || "http://localhost:5002/internal/market-price";
 
 // ==========================================
 // INTERNAL SECURITY
