@@ -13,7 +13,7 @@ const {
   startTwelveDataProvider,
 } = require("./providers/twelvedata.provider");
 
-const PORT = 5002;
+const PORT = Number(process.env.PORT || 5002);
 
 async function readRequestBody(
   req,

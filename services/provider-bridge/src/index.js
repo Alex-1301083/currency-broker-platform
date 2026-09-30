@@ -105,6 +105,12 @@ function requireInternalAuth(req, res) {
 
 async function sendPriceToMarketData(price) {
   try {
+    const controller = new AbortController();
+
+    const timeout = setTimeout(() => {
+      controller.abort();
+    }, 5000);
+
     const response = await fetch(MARKET_DATA_URL, {
       method: "POST",
 
@@ -119,9 +125,23 @@ async function sendPriceToMarketData(price) {
         spread: price.spread,
         timestamp: price.timestamp || new Date().toISOString(),
       }),
+
+      signal: controller.signal,
     });
 
-    const result = await response.json();
+    clearTimeout(timeout);
+
+    const text = await response.text();
+
+    let result;
+
+    try {
+      result = text ? JSON.parse(text) : {};
+    } catch {
+      result = {
+        message: text || "Invalid response from Market Data",
+      };
+    }
 
     if (!response.ok) {
       throw new Error(result.message || `Market Data HTTP ${response.status}`);
@@ -131,12 +151,18 @@ async function sendPriceToMarketData(price) {
 
     return result;
   } catch (error) {
-    console.error(`[MARKET DATA PUSH ERROR] ${price.symbol}`, error.message);
+    console.error(
+      `[MARKET DATA PUSH ERROR] ${price.symbol}`,
+      error.name === "AbortError"
+        ? "Request timed out after 5 seconds"
+        : error.message,
+    );
+
+    console.error("[MARKET DATA URL]", MARKET_DATA_URL);
 
     return null;
   }
 }
-
 // ==========================================
 // PROVIDER BRIDGE HTTP SERVER
 // ==========================================
