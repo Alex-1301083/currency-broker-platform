@@ -331,6 +331,42 @@ CREATE TABLE IF NOT EXISTS audit_logs (
 );
 
 -- ============================================
+-- CANDLES
+-- ============================================
+
+CREATE TABLE IF NOT EXISTS candles (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+
+    symbol_id UUID NOT NULL
+        REFERENCES symbols(id) ON DELETE CASCADE,
+
+    symbol VARCHAR(30) NOT NULL,
+
+    timeframe VARCHAR(10) NOT NULL DEFAULT '1m',
+
+    open_price NUMERIC(20, 8) NOT NULL,
+    high_price NUMERIC(20, 8) NOT NULL,
+    low_price NUMERIC(20, 8) NOT NULL,
+    close_price NUMERIC(20, 8) NOT NULL,
+
+    volume NUMERIC(30, 8) NOT NULL DEFAULT 0,
+
+    open_time TIMESTAMPTZ NOT NULL,
+    close_time TIMESTAMPTZ NOT NULL,
+
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT candles_symbol_timeframe_open_unique
+        UNIQUE (symbol_id, timeframe, open_time)
+);
+
+CREATE INDEX IF NOT EXISTS idx_candles_symbol_timeframe_time
+ON candles (symbol, timeframe, open_time DESC);
+
+CREATE INDEX IF NOT EXISTS idx_candles_symbol_id_time
+ON candles (symbol_id, open_time DESC);
+
+-- ============================================
 -- INDEXES
 -- ============================================
 
