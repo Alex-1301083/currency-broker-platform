@@ -60,20 +60,37 @@ const allowedOrigins = (
   .map((origin) => origin.trim())
   .filter(Boolean);
 
+function isLocalOrigin(origin) {
+  return /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\]|192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+)(:\d+)?$/i.test(
+    origin,
+  );
+}
+
 app.use(
   cors({
     origin(origin, callback) {
+      // Non-browser tools (curl, Postman, server-to-server)
       if (!origin) {
         return callback(null, true);
       }
 
+      // Production client / admin URLs from CLIENT_URLS
       if (allowedOrigins.includes(origin)) {
         return callback(null, true);
       }
 
-      return callback(
-        new Error("CORS origin not allowed"),
+      // Local development (any port) and LAN testing
+      if (process.env.NODE_ENV !== "production" && isLocalOrigin(origin)) {
+        return callback(null, true);
+      }
+
+      // IMPORTANT: do not throw here. Throwing turned a simple CORS
+      // problem into a confusing "500 Internal server error" for login.
+      console.warn(
+        `[CORS] Blocked origin: ${origin}. Add it to CLIENT_URLS in .env`,
       );
+
+      return callback(null, false);
     },
 
     credentials: true,

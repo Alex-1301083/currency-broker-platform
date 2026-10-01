@@ -7,6 +7,53 @@ const {
   createUser
 } = require("../models/user.model");
 
+const {
+  findAccountByUserId,
+  createAccount
+} = require("../models/account.model");
+
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+
+function generateAccountNumber() {
+  const timestamp = Date.now().toString().slice(-8);
+  const random = Math.floor(1000 + Math.random() * 9000);
+
+  return `TRX${timestamp}${random}`;
+}
+
+/**
+ * Every client needs a trading account to use the terminal.
+ * Previously register only created the USER, so a new client landed
+ * on a dashboard with no account. This creates (or finds) the
+ * default demo account: 10,000 USD, leverage 1:100.
+ */
+async function ensureTradingAccount(userId) {
+  const existing = await findAccountByUserId(userId);
+
+  if (existing) {
+    return existing;
+  }
+
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      return await createAccount({
+        userId,
+        accountNumber: generateAccountNumber(),
+        currency: "USD",
+        initialBalance: 10000,
+        leverage: 100
+      });
+    } catch (error) {
+      // account number collision -> retry with a new number
+      if (error.code !== "23505") {
+        throw error;
+      }
+    }
+  }
+
+  return findAccountByUserId(userId);
+}
+
 function generateToken(user) {
   return jwt.sign(
     {
@@ -36,6 +83,34 @@ async function register(req, res) {
       });
     }
 
+    if (
+      typeof email !== "string" ||
+      typeof password !== "string" ||
+      typeof fullName !== "string"
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid registration details"
+      });
+    }
+
+    const normalizedEmail = email.trim().toLowerCase();
+    const normalizedFullName = fullName.trim().replace(/\s+/g, " ");
+
+    if (normalizedFullName.length < 2) {
+      return res.status(400).json({
+        success: false,
+        message: "Please enter your full name"
+      });
+    }
+
+    if (!EMAIL_PATTERN.test(normalizedEmail)) {
+      return res.status(400).json({
+        success: false,
+        message: "Please enter a valid email address"
+      });
+    }
+
     if (password.length < 6) {
       return res.status(400).json({
         success: false,
@@ -43,8 +118,12 @@ async function register(req, res) {
       });
     }
 
-    const normalizedEmail = email.trim().toLowerCase();
-    const normalizedFullName = fullName.trim();
+    if (Buffer.byteLength(password, "utf8") > 72) {
+      return res.status(400).json({
+        success: false,
+        message: "Password is too long (maximum 72 characters)"
+      });
+    }
 
     const existingUser = await findUserByEmail(normalizedEmail);
 
@@ -63,13 +142,23 @@ async function register(req, res) {
       fullName: normalizedFullName
     });
 
+    let account = null;
+
+    try {
+      account = await ensureTradingAccount(user.id);
+    } catch (accountError) {
+      // User exists; the dashboard / next login will retry account creation.
+      console.error("Register: account creation failed:", accountError);
+    }
+
     const token = generateToken(user);
 
     return res.status(201).json({
       success: true,
-      message: "User registered successfully",
+      message: "Account created successfully",
       data: {
         user,
+        account,
         token
       }
     });
@@ -90,10 +179,15 @@ async function login(req, res) {
       password
     } = req.body;
 
-    if (!email || !password) {
+    if (
+      !email ||
+      !password ||
+      typeof email !== "string" ||
+      typeof password !== "string"
+    ) {
       return res.status(400).json({
         success: false,
-        message: "email and password are required"
+        message: "Email and password are required"
       });
     }
 
@@ -125,6 +219,14 @@ async function login(req, res) {
         success: false,
         message: "Invalid email or password"
       });
+    }
+
+    if (user.role !== "admin") {
+      try {
+        await ensureTradingAccount(user.id);
+      } catch (accountError) {
+        console.error("Login: account check failed:", accountError);
+      }
     }
 
     const token = generateToken(user);

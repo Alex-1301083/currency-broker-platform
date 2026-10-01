@@ -1,0 +1,12 @@
+warning: in the working copy of 'apps/client/src/App.css', LF will be replaced by CRLF the next time Git touches it
+ apps/client/src/App.css                            |  649 [32m+++++++[m
+ apps/client/src/components/TradingChart.jsx        | 1928 [32m++++++++[m[31m------------[m
+ apps/client/src/pages/Login.jsx                    |  209 [32m++[m[31m-[m
+ apps/client/src/pages/Register.jsx                 |  344 [32m+++[m[31m-[m
+ services/api-server/src/app.js                     |   21 [32m+[m[31m-[m
+ .../api-server/src/controllers/auth.controller.js  |  112 [32m+[m[31m-[m
+ .../api-server/src/middleware/error.middleware.js  |   11 [32m+[m[31m-[m
+ .../src/middleware/rate-limit.middleware.js        |    9 [32m+[m[31m-[m
+ services/api-server/src/services/candle.service.js |  450 [32m+++[m[31m--[m
+ .../src/providers/twelvedata.provider.js           |    2 [32m+[m[31m-[m
+ 10 files changed, 2309 insertions(+), 1426 deletions(-)

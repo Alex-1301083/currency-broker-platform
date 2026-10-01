@@ -265,7 +265,7 @@ async function handlePriceTick(
 
         bid,
 
-        volume: 0,
+        volume: 1, // tick volume (like TradingView "Vol · Ticks")
 
         timestamp:
           timestamp

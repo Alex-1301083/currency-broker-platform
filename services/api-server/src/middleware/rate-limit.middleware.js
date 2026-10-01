@@ -12,6 +12,7 @@ const generalLimiter = rateLimit({
 
   message: {
     success: false,
+    message: "Too many requests. Please try again later.",
     error: "Too many requests. Please try again later.",
   },
 });
@@ -19,7 +20,7 @@ const generalLimiter = rateLimit({
 const authLimiter = rateLimit({
   windowMs: 60 * 1000,
 
-  limit: 10,
+  limit: 20,
 
   standardHeaders: "draft-8",
 
@@ -27,8 +28,10 @@ const authLimiter = rateLimit({
 
   message: {
     success: false,
+    message:
+      "Too many login attempts. Please wait a minute and try again.",
     error:
-      "Too many authentication requests. Please try again later.",
+      "Too many login attempts. Please wait a minute and try again.",
   },
 });
 
@@ -51,6 +54,8 @@ const orderLimiter = rateLimit({
 
   message: {
     success: false,
+    message:
+      "Too many trading requests. Please try again later.",
     error:
       "Too many trading requests. Please try again later.",
   },

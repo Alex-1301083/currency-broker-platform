@@ -52,6 +52,30 @@ const BASE_TIMEFRAME = "1m";
 const activeCandles = new Map();
 
 /**
+ * The live (current minute) candle is saved to the DB every few seconds,
+ * so the API server (a separate process) can serve a correct, complete
+ * current candle to the chart. Without this the chart only knew about
+ * candles AFTER the minute had finished.
+ */
+const PERSIST_INTERVAL_MS = 3000;
+const lastPersistAt = new Map();
+
+function persistActiveCandle(candle) {
+  const now = Date.now();
+  const last = lastPersistAt.get(candle.symbol) || 0;
+
+  if (now - last < PERSIST_INTERVAL_MS) {
+    return;
+  }
+
+  lastPersistAt.set(candle.symbol, now);
+
+  saveCandle(candle).catch((error) => {
+    console.error("[CANDLE] partial save failed:", error.message);
+  });
+}
+
+/**
  * Convert Date into the beginning of its minute.
  *
  * Example:
@@ -152,10 +176,10 @@ async function saveCandle(candle) {
       open_time
     )
     DO UPDATE SET
-      high_price = EXCLUDED.high_price,
-      low_price = EXCLUDED.low_price,
+      high_price = GREATEST(candles.high_price, EXCLUDED.high_price),
+      low_price = LEAST(candles.low_price, EXCLUDED.low_price),
       close_price = EXCLUDED.close_price,
-      volume = EXCLUDED.volume,
+      volume = GREATEST(candles.volume, EXCLUDED.volume),
       close_time = EXCLUDED.close_time
     RETURNING *;
   `;
@@ -248,6 +272,8 @@ async function processPriceTick({
 
     activeCandles.set(symbol, candle);
 
+    persistActiveCandle(candle);
+
     return {
       status: "created",
 
@@ -271,6 +297,8 @@ async function processPriceTick({
     candle.closePrice = price;
 
     candle.volume += Number(volume) || 0;
+
+    persistActiveCandle(candle);
 
     return {
       status: "updated",
@@ -316,6 +344,9 @@ async function processPriceTick({
   };
 
   activeCandles.set(symbol, newCandle);
+
+  lastPersistAt.set(symbol, 0);
+  persistActiveCandle(newCandle);
 
   return {
     status: "new_candle",
@@ -366,177 +397,346 @@ function getActiveCandle(symbol) {
   return formatCandleFromMemory(candle);
 }
 
+/*
+|--------------------------------------------------------------------------
+| Timeframes
+|--------------------------------------------------------------------------
+| minutes  -> bucket size
+| provider -> Twelve Data interval used for deep history
+| ttl      -> how long provider history is cached (rate-limit friendly)
+*/
+const TIMEFRAMES = {
+  "1m": { minutes: 1, provider: "1min", ttl: 20 * 1000 },
+  "5m": { minutes: 5, provider: "5min", ttl: 45 * 1000 },
+  "15m": { minutes: 15, provider: "15min", ttl: 90 * 1000 },
+  "30m": { minutes: 30, provider: "30min", ttl: 2 * 60 * 1000 },
+  "1h": { minutes: 60, provider: "1h", ttl: 5 * 60 * 1000 },
+  "4h": { minutes: 240, provider: "4h", ttl: 10 * 60 * 1000 },
+  "1d": { minutes: 1440, provider: "1day", ttl: 15 * 60 * 1000 },
+};
+
+const TWELVE_REST_URL =
+  process.env.TWELVE_DATA_REST_URL ||
+  "https://api.twelvedata.com/time_series";
+
+const providerSymbolMap = new Map(
+  (
+    process.env.TWELVE_DATA_SYMBOLS ||
+    "XAUUSD:XAU/USD,EURUSD:EUR/USD,GBPUSD:GBP/USD,BTCUSD:BTC/USD"
+  )
+    .split(",")
+    .map((item) => item.split(":").map((part) => part.trim()))
+    .filter(([internal, provider]) => internal && provider)
+    .map(([internal, provider]) => [internal.toUpperCase(), provider]),
+);
+
+const SPREADS = {
+  XAUUSD: Number(process.env.MARKET_SPREAD_XAUUSD || 0.3),
+  EURUSD: Number(process.env.MARKET_SPREAD_EURUSD || 0.0002),
+  GBPUSD: Number(process.env.MARKET_SPREAD_GBPUSD || 0.0002),
+  BTCUSD: Number(process.env.MARKET_SPREAD_BTCUSD || 50),
+};
+
+function priceDigits(symbol) {
+  return symbol === "XAUUSD" || symbol === "BTCUSD" ? 2 : 5;
+}
+
+const providerCache = new Map();
+const providerInflight = new Map();
+
 /**
- * Get historical candles.
+ * Twelve Data returns MID prices, while the live ticks stored by
+ * TradeX are BID prices (mid - spread/2). Convert so that history and
+ * live candles line up perfectly on the same chart.
  */
-async function getHistoricalCandles({ symbol, timeframe = "1m", limit = 200 }) {
-  const safeLimit = Math.min(Math.max(Number(limit) || 200, 1), 1000);
+function midToBid(symbol, value) {
+  const spread = SPREADS[symbol] || 0;
 
-  const normalizedSymbol = symbol.toUpperCase();
+  return Number((Number(value) - spread / 2).toFixed(priceDigits(symbol)));
+}
 
-  // ==========================================
-  // 1-MINUTE CANDLES
-  // ==========================================
+function parseProviderTime(text) {
+  const value = String(text).trim();
 
-  if (timeframe === "1m") {
-    const query = `
-      SELECT
-        id,
-        symbol_id,
-        symbol,
-        timeframe,
-        open_price,
-        high_price,
-        low_price,
-        close_price,
-        volume,
-        open_time,
-        close_time,
-        created_at
-      FROM candles
-      WHERE symbol = $1
-        AND timeframe = '1m'
-      ORDER BY open_time DESC
-      LIMIT $2;
-    `;
+  const iso = value.includes(" ")
+    ? `${value.replace(" ", "T")}Z`
+    : `${value}T00:00:00Z`;
 
-    const result = await pool.query(query, [normalizedSymbol, safeLimit]);
+  return new Date(iso);
+}
 
-    return result.rows.reverse().map(formatCandle);
+async function fetchProviderCandles(symbol, timeframe, limit) {
+  const config = TIMEFRAMES[timeframe];
+  const apiKey = process.env.TWELVE_DATA_API_KEY;
+  const providerSymbol = providerSymbolMap.get(symbol);
+
+  if (!apiKey || !providerSymbol || typeof fetch !== "function") {
+    return [];
   }
 
-  // ==========================================
-  // HIGHER TIMEFRAME SETTINGS
-  // ==========================================
+  const cacheKey = `${symbol}|${timeframe}`;
+  const cached = providerCache.get(cacheKey);
 
-  const timeframeMinutes = {
-    "5m": 5,
-    "15m": 15,
-    "1h": 60,
-  };
-
-  const minutes = timeframeMinutes[timeframe];
-
-  if (!minutes) {
-    throw new Error("Invalid timeframe. Use 1m, 5m, 15m or 1h.");
+  if (
+    cached &&
+    Date.now() - cached.at < config.ttl &&
+    cached.candles.length >= Math.min(limit, cached.requested)
+  ) {
+    return cached.candles;
   }
 
-  // ==========================================
-  // AGGREGATE 1m → HIGHER TIMEFRAME
-  // ==========================================
+  if (providerInflight.has(cacheKey)) {
+    return providerInflight.get(cacheKey);
+  }
 
-  const requiredOneMinuteCandles = safeLimit * minutes;
+  const task = (async () => {
+    try {
+      const outputsize = Math.min(Math.max(limit, 50), 1000);
 
-  const query = `
-    SELECT
-      symbol_id,
-      symbol,
-      open_price,
-      high_price,
-      low_price,
-      close_price,
-      volume,
-      open_time
+      const url = new URL(TWELVE_REST_URL);
+
+      url.searchParams.set("symbol", providerSymbol);
+      url.searchParams.set("interval", config.provider);
+      url.searchParams.set("outputsize", String(outputsize));
+      url.searchParams.set("timezone", "UTC");
+      url.searchParams.set("order", "ASC");
+      url.searchParams.set("apikey", apiKey);
+
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 8000);
+
+      const response = await fetch(url, { signal: controller.signal });
+
+      clearTimeout(timer);
+
+      const body = await response.json();
+
+      if (!Array.isArray(body?.values)) {
+        throw new Error(body?.message || "No candle values returned");
+      }
+
+      const minutes = config.minutes;
+
+      const candles = body.values
+        .map((row) => {
+          const openTime = parseProviderTime(row.datetime);
+
+          return {
+            symbol,
+            timeframe,
+            open: midToBid(symbol, row.open),
+            high: midToBid(symbol, row.high),
+            low: midToBid(symbol, row.low),
+            close: midToBid(symbol, row.close),
+            volume: Number(row.volume) || 0,
+            openTime,
+            closeTime: new Date(openTime.getTime() + minutes * 60000),
+          };
+        })
+        .filter(
+          (candle) =>
+            !Number.isNaN(candle.openTime.getTime()) &&
+            [candle.open, candle.high, candle.low, candle.close].every(
+              (value) => Number.isFinite(value) && value > 0,
+            ),
+        );
+
+      providerCache.set(cacheKey, {
+        at: Date.now(),
+        requested: outputsize,
+        candles,
+      });
+
+      return candles;
+    } catch (error) {
+      console.warn(
+        `[CANDLE] provider history unavailable for ${symbol} ${timeframe}: ${error.message}`,
+      );
+
+      return cached ? cached.candles : [];
+    } finally {
+      providerInflight.delete(cacheKey);
+    }
+  })();
+
+  providerInflight.set(cacheKey, task);
+
+  return task;
+}
+
+/**
+ * Candles built from OUR OWN live ticks (stored 1m candles),
+ * grouped into the requested timeframe.
+ */
+async function getStoredCandles(symbol, timeframe, limit) {
+  const minutes = TIMEFRAMES[timeframe].minutes;
+
+  const rowsNeeded = Math.min(limit * minutes, 60000);
+
+  const result = await pool.query(
+    `
+    SELECT symbol_id, symbol, open_price, high_price, low_price,
+           close_price, volume, open_time
     FROM candles
     WHERE symbol = $1
       AND timeframe = '1m'
     ORDER BY open_time DESC
     LIMIT $2;
-  `;
+    `,
+    [symbol, rowsNeeded],
+  );
 
-  const result = await pool.query(query, [
-    normalizedSymbol,
-    requiredOneMinuteCandles,
-  ]);
+  const rows = result.rows.reverse();
 
-  const oneMinuteCandles = result.rows.reverse();
-
-  if (oneMinuteCandles.length === 0) {
-    return [];
+  if (minutes === 1) {
+    return rows.map((row) => ({
+      symbolId: row.symbol_id,
+      symbol: row.symbol,
+      timeframe,
+      open: Number(row.open_price),
+      high: Number(row.high_price),
+      low: Number(row.low_price),
+      close: Number(row.close_price),
+      volume: Number(row.volume) || 0,
+      openTime: new Date(row.open_time),
+      closeTime: new Date(new Date(row.open_time).getTime() + 60000),
+    }));
   }
 
-  // ==========================================
-  // GROUP 1m CANDLES
-  // ==========================================
-
+  const bucketMs = minutes * 60000;
   const groups = new Map();
 
-  for (const candle of oneMinuteCandles) {
-    const openTime = new Date(candle.open_time);
+  for (const row of rows) {
+    const time = new Date(row.open_time).getTime();
+    const key = Math.floor(time / bucketMs) * bucketMs;
+    const group = groups.get(key);
 
-    const timestamp = openTime.getTime();
-
-    const timeframeMs = minutes * 60 * 1000;
-
-    const groupTimestamp = Math.floor(timestamp / timeframeMs) * timeframeMs;
-
-    const groupKey = groupTimestamp;
-
-    if (!groups.has(groupKey)) {
-      groups.set(groupKey, {
-        symbolId: candle.symbol_id,
-
-        symbol: candle.symbol,
-
+    if (!group) {
+      groups.set(key, {
+        symbolId: row.symbol_id,
+        symbol: row.symbol,
         timeframe,
-
-        open: Number(candle.open_price),
-
-        high: Number(candle.high_price),
-
-        low: Number(candle.low_price),
-
-        close: Number(candle.close_price),
-
-        volume: Number(candle.volume) || 0,
-
-        openTime: new Date(groupTimestamp),
+        open: Number(row.open_price),
+        high: Number(row.high_price),
+        low: Number(row.low_price),
+        close: Number(row.close_price),
+        volume: Number(row.volume) || 0,
+        openTime: new Date(key),
+        closeTime: new Date(key + bucketMs),
       });
-
       continue;
     }
 
-    const group = groups.get(groupKey);
-
-    group.high = Math.max(group.high, Number(candle.high_price));
-
-    group.low = Math.min(group.low, Number(candle.low_price));
-
-    group.close = Number(candle.close_price);
-
-    group.volume += Number(candle.volume) || 0;
+    group.high = Math.max(group.high, Number(row.high_price));
+    group.low = Math.min(group.low, Number(row.low_price));
+    group.close = Number(row.close_price);
+    group.volume += Number(row.volume) || 0;
   }
 
-  // ==========================================
-  // FORMAT RESULT
-  // ==========================================
-
-  const aggregated = Array.from(groups.values())
-    .map((group) => ({
-      symbolId: group.symbolId,
-
-      symbol: group.symbol,
-
-      timeframe: group.timeframe,
-
-      open: group.open,
-
-      high: group.high,
-
-      low: group.low,
-
-      close: group.close,
-
-      volume: group.volume,
-
-      openTime: group.openTime,
-
-      closeTime: new Date(group.openTime.getTime() + minutes * 60 * 1000),
-    }))
-    .sort((a, b) => a.openTime.getTime() - b.openTime.getTime());
-
-  return aggregated.slice(-safeLimit);
+  return Array.from(groups.values());
 }
+
+/**
+ * Merge provider history with our own live candles.
+ *
+ * - Old candles  : provider (complete, correct OHLC)
+ * - Newest candle: provider open + OUR live high/low/close
+ *   (provider history can lag by a few seconds)
+ */
+function mergeCandles(providerCandles, storedCandles, timeframe) {
+  const bucketMs = TIMEFRAMES[timeframe].minutes * 60000;
+
+  const merged = new Map();
+
+  for (const candle of providerCandles) {
+    merged.set(candle.openTime.getTime(), { ...candle });
+  }
+
+  const newestAllowed = Date.now() - bucketMs * 2;
+
+  for (const stored of storedCandles) {
+    const key = stored.openTime.getTime();
+    const existing = merged.get(key);
+
+    if (!existing) {
+      merged.set(key, { ...stored });
+      continue;
+    }
+
+    if (key >= newestAllowed) {
+      existing.high = Math.max(existing.high, stored.high);
+      existing.low = Math.min(existing.low, stored.low);
+      existing.close = stored.close;
+      existing.volume = Math.max(existing.volume, stored.volume);
+    }
+  }
+
+  return Array.from(merged.values()).sort(
+    (a, b) => a.openTime.getTime() - b.openTime.getTime(),
+  );
+}
+
+/**
+ * Remove candles that are obviously wrong (old demo-feed prices,
+ * bad provider rows). One bad candle makes the whole chart "squeeze"
+ * because the price axis stretches to include it.
+ */
+function removeOutliers(candles, timeframe) {
+  if (candles.length < 5) {
+    return candles;
+  }
+
+  const maxDeviation = {
+    "1m": 0.05,
+    "5m": 0.05,
+    "15m": 0.06,
+    "30m": 0.08,
+    "1h": 0.1,
+    "4h": 0.2,
+    "1d": 0.6,
+  }[timeframe];
+
+  const anchor = candles[candles.length - 1].close;
+
+  return candles.filter(
+    (candle) =>
+      candle.high >= candle.low &&
+      Math.abs(candle.close - anchor) / anchor <= maxDeviation &&
+      Math.abs(candle.high - anchor) / anchor <= maxDeviation &&
+      Math.abs(candle.low - anchor) / anchor <= maxDeviation,
+  );
+}
+
+/**
+ * Get historical candles.
+ */
+async function getHistoricalCandles({ symbol, timeframe = "1m", limit = 200 }) {
+  if (!TIMEFRAMES[timeframe]) {
+    throw new Error(
+      `Invalid timeframe. Use ${Object.keys(TIMEFRAMES).join(", ")}.`,
+    );
+  }
+
+  const safeLimit = Math.min(Math.max(Number(limit) || 200, 1), 1000);
+
+  const normalizedSymbol = symbol.toUpperCase();
+
+  const [providerCandles, storedCandles] = await Promise.all([
+    fetchProviderCandles(normalizedSymbol, timeframe, safeLimit),
+    getStoredCandles(normalizedSymbol, timeframe, safeLimit).catch((error) => {
+      console.error("[CANDLE] stored candles failed:", error.message);
+      return [];
+    }),
+  ]);
+
+  const merged = removeOutliers(
+    mergeCandles(providerCandles, storedCandles, timeframe),
+    timeframe,
+  );
+
+  return merged.slice(-safeLimit);
+}
+
 /**
  * Save all active candles.
  *

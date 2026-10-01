@@ -1,78 +1,184 @@
-import {
-  useEffect,
-  useRef,
-  useState,
-} from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
   createChart,
-  CandlestickSeries,
-  LineStyle,
   createSeriesMarkers,
+  CandlestickSeries,
+  HistogramSeries,
+  CrosshairMode,
+  LineStyle,
 } from "lightweight-charts";
 
 import api from "../services/api";
 
+/*
+=========================================================
+TRADEX LIVE CHART  (TradingView style)
+
+- Candles + tick volume
+- BID line (last price) and ASK line, updated live
+- SELL / BUY quote box with spread (like TradingView)
+- Open positions: ENTRY, STOP LOSS and TAKE PROFIT lines
+  with live P/L, plus BUY / SELL arrows on the candle
+- Shows a normal number of candles (no more "squeezed" chart)
+- Time axis in the user's LOCAL time zone
+=========================================================
+*/
+
 const TIMEFRAMES = [
-  {
-    label: "1m",
-    value: "1m",
-  },
-  {
-    label: "5m",
-    value: "5m",
-  },
-  {
-    label: "15m",
-    value: "15m",
-  },
-  {
-    label: "1H",
-    value: "1h",
-  },
+  { label: "1m", value: "1m", ms: 60_000 },
+  { label: "5m", value: "5m", ms: 5 * 60_000 },
+  { label: "15m", value: "15m", ms: 15 * 60_000 },
+  { label: "30m", value: "30m", ms: 30 * 60_000 },
+  { label: "1H", value: "1h", ms: 60 * 60_000 },
+  { label: "4H", value: "4h", ms: 4 * 60 * 60_000 },
+  { label: "1D", value: "1d", ms: 24 * 60 * 60_000 },
 ];
 
+const SYMBOL_NAMES = {
+  XAUUSD: "Gold Spot / U.S. Dollar",
+  EURUSD: "Euro / U.S. Dollar",
+  GBPUSD: "British Pound / U.S. Dollar",
+  BTCUSD: "Bitcoin / U.S. Dollar",
+};
+
+const THEMES = {
+  dark: {
+    background: "#0b1220",
+    text: "#9ca3af",
+    grid: "#161f31",
+    border: "#243049",
+    crosshair: "#6b7280",
+    labelBg: "#1f2937",
+  },
+  light: {
+    background: "#ffffff",
+    text: "#131722",
+    grid: "#f0f3fa",
+    border: "#e0e3eb",
+    crosshair: "#9598a1",
+    labelBg: "#131722",
+  },
+};
+
+const UP = "#089981";
+const DOWN = "#f23645";
+const BUY_BLUE = "#2962ff";
+const ASK_COLOR = "#2962ff";
+
+/* Number of candles shown when the chart opens (TradingView-like). */
+const VISIBLE_BARS = 110;
+const BAR_SPACING = 9;
+
 function getDigits(symbol) {
-  if (
-    symbol === "XAUUSD" ||
-    symbol === "BTCUSD"
-  ) {
-    return 2;
-  }
+  const name = String(symbol || "").toUpperCase();
+
+  if (name === "XAUUSD" || name === "BTCUSD") return 2;
+  if (name.endsWith("JPY")) return 3;
 
   return 5;
 }
 
-function getTimeframeMs(
-  timeframe,
-) {
-  switch (timeframe) {
-    case "1m":
-      return 60 * 1000;
+function toNumber(value) {
+  const number = Number(value);
 
-    case "5m":
-      return 5 * 60 * 1000;
+  return Number.isFinite(number) ? number : null;
+}
 
-    case "15m":
-      return 15 * 60 * 1000;
+function bucketStartSeconds(timeMs, frameMs) {
+  return Math.floor((Math.floor(timeMs / frameMs) * frameMs) / 1000);
+}
 
-    case "1h":
-      return 60 * 60 * 1000;
+const pad = (value) => String(value).padStart(2, "0");
 
+const MONTHS = [
+  "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+  "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
+
+const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+/* Chart time is UTC seconds; show it in the browser's local time. */
+function formatCrosshairTime(seconds) {
+  const date = new Date(seconds * 1000);
+
+  const day = `${WEEKDAYS[date.getDay()]} ${pad(date.getDate())} ${
+    MONTHS[date.getMonth()]
+  } '${String(date.getFullYear()).slice(2)}`;
+
+  return `${day}  ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+function formatTick(seconds, tickType) {
+  const date = new Date(seconds * 1000);
+
+  switch (tickType) {
+    case 0:
+      return String(date.getFullYear());
+    case 1:
+      return MONTHS[date.getMonth()];
+    case 2:
+      return String(date.getDate());
     default:
-      return 60 * 1000;
+      return `${pad(date.getHours())}:${pad(date.getMinutes())}`;
   }
 }
 
-function safeNumber(value) {
-  const number =
-    Number(value);
+function money(value) {
+  const number = Number(value) || 0;
 
-  return Number.isFinite(
-    number,
-  )
-    ? number
-    : null;
+  return `${number >= 0 ? "+" : "-"}$${Math.abs(number).toFixed(2)}`;
+}
+
+function formatVolume(value) {
+  const number = Number(value) || 0;
+
+  if (number >= 1_000_000) return `${(number / 1_000_000).toFixed(2)}M`;
+  if (number >= 1_000) return `${(number / 1_000).toFixed(2)}K`;
+
+  return String(Math.round(number));
+}
+
+/*
+ One bad candle (old demo data, a provider glitch) stretches the
+ price axis and "squeezes" all real candles. Sort, de-duplicate
+ and drop candles that are impossible.
+*/
+function cleanCandles(rawCandles) {
+  const byTime = new Map();
+
+  for (const candle of rawCandles) {
+    const time = Math.floor(new Date(candle.openTime).getTime() / 1000);
+
+    const open = toNumber(candle.open);
+    const high = toNumber(candle.high);
+    const low = toNumber(candle.low);
+    const close = toNumber(candle.close);
+
+    if (
+      !Number.isFinite(time) ||
+      [open, high, low, close].some((value) => value === null || value <= 0)
+    ) {
+      continue;
+    }
+
+    byTime.set(time, {
+      time,
+      open,
+      high: Math.max(high, open, close),
+      low: Math.min(low, open, close),
+      close,
+      volume: toNumber(candle.volume) || 0,
+    });
+  }
+
+  return Array.from(byTime.values()).sort((a, b) => a.time - b.time);
+}
+
+function volumeColor(candle) {
+  return candle.close >= candle.open
+    ? "rgba(8,153,129,0.45)"
+    : "rgba(242,54,69,0.45)";
 }
 
 export default function TradingChart({
@@ -80,1245 +186,819 @@ export default function TradingChart({
   bid = 0,
   ask = 0,
   positions = [],
+  onSell,
+  onBuy,
 }) {
-  const containerRef =
-    useRef(null);
+  const containerRef = useRef(null);
 
-  const chartRef =
-    useRef(null);
+  const chartRef = useRef(null);
+  const candleSeriesRef = useRef(null);
+  const volumeSeriesRef = useRef(null);
+  const markersRef = useRef(null);
 
-  const candleSeriesRef =
-    useRef(null);
+  const lastCandleRef = useRef(null);
+  const readyRef = useRef(false);
+  const lastBidRef = useRef(0);
+  const bidRef = useRef(0);
 
-  const markerRef =
-    useRef(null);
+  const askLineRef = useRef(null);
+  const positionLinesRef = useRef(new Map());
 
-  const latestCandleRef =
-    useRef(null);
+  const lastTickAtRef = useRef(0);
+  const hiddenAtRef = useRef(0);
 
-  const bidLineRef =
-    useRef(null);
+  const [timeframe, setTimeframe] = useState("5m");
+  const [theme, setTheme] = useState(() => {
+    try {
+      return localStorage.getItem("tradex_chart_theme") || "dark";
+    } catch {
+      return "dark";
+    }
+  });
 
-  const askLineRef =
-    useRef(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [reloadKey, setReloadKey] = useState(0);
 
-  const positionLinesRef =
-    useRef([]);
+  const [lastCandle, setLastCandle] = useState(null);
+  const [hoverCandle, setHoverCandle] = useState(null);
+  const [live, setLive] = useState(false);
 
-  const [
-    timeframe,
-    setTimeframe,
-  ] = useState("1m");
+  const digits = getDigits(symbol);
+  const frame = TIMEFRAMES.find((item) => item.value === timeframe);
+  const palette = THEMES[theme];
 
-  const [
-    loading,
-    setLoading,
-  ] = useState(false);
+  const currentBid = toNumber(bid);
+  const currentAsk = toNumber(ask);
 
-  const [
-    error,
-    setError,
-  ] = useState("");
+  /* latest bid for callbacks (declared before the effects that read it) */
+  useEffect(() => {
+    bidRef.current = currentBid || 0;
+  }, [currentBid]);
 
-  /*
-  ========================================================
-  CREATE CHART
-  ========================================================
-  */
+  /* ---------------- CREATE CHART (once) ---------------- */
 
   useEffect(() => {
-    if (!containerRef.current) {
-      return;
-    }
+    const container = containerRef.current;
 
-    const container =
-      containerRef.current;
+    if (!container) return undefined;
 
-    const chart =
-      createChart(
-        container,
-        {
-          width:
-            container.clientWidth,
+    const start = THEMES[theme];
 
-          height: 500,
+    const chart = createChart(container, {
+      autoSize: true,
 
-          layout: {
-            background: {
-              color:
-                "#080d18",
-            },
+      layout: {
+        background: { color: start.background },
+        textColor: start.text,
+        fontSize: 12,
+        fontFamily:
+          "-apple-system, BlinkMacSystemFont, 'Trebuchet MS', Roboto, Ubuntu, sans-serif",
+        attributionLogo: false,
+      },
 
-            textColor:
-              "#94a3b8",
-          },
+      grid: {
+        vertLines: { color: start.grid },
+        horzLines: { color: start.grid },
+      },
 
-          grid: {
-            vertLines: {
-              color:
-                "#172033",
-            },
+      rightPriceScale: {
+        borderColor: start.border,
+        scaleMargins: { top: 0.14, bottom: 0.2 },
+        minimumWidth: 96,
+      },
 
-            horzLines: {
-              color:
-                "#172033",
-            },
-          },
+      timeScale: {
+        borderColor: start.border,
+        timeVisible: true,
+        secondsVisible: false,
+        barSpacing: BAR_SPACING,
+        minBarSpacing: 2,
+        rightOffset: 10,
+        tickMarkFormatter: (time, tickType) => formatTick(time, tickType),
+      },
 
-          rightPriceScale: {
-            borderColor:
-              "#263247",
+      localization: {
+        timeFormatter: (time) => formatCrosshairTime(time),
+      },
 
-            scaleMargins: {
-              top: 0.08,
-              bottom: 0.08,
-            },
-          },
-
-          timeScale: {
-            borderColor:
-              "#263247",
-
-            timeVisible:
-              true,
-
-            secondsVisible:
-              false,
-
-            rightOffset: 8,
-          },
-
-          crosshair: {
-            mode: 0,
-
-            vertLine: {
-              color:
-                "#64748b",
-
-              width: 1,
-
-              style:
-                LineStyle.Dashed,
-
-              labelBackgroundColor:
-                "#1e293b",
-            },
-
-            horzLine: {
-              color:
-                "#64748b",
-
-              width: 1,
-
-              style:
-                LineStyle.Dashed,
-
-              labelBackgroundColor:
-                "#1e293b",
-            },
-          },
-
-          handleScroll: {
-            mouseWheel:
-              true,
-
-            pressedMouseMove:
-              true,
-          },
-
-          handleScale: {
-            mouseWheel:
-              true,
-
-            pinch:
-              true,
-
-            axisPressedMouseMove:
-              true,
-          },
+      crosshair: {
+        mode: CrosshairMode.Normal,
+        vertLine: {
+          color: start.crosshair,
+          width: 1,
+          style: LineStyle.Dashed,
+          labelBackgroundColor: start.labelBg,
         },
-      );
-
-    const series =
-      chart.addSeries(
-        CandlestickSeries,
-        {
-          upColor:
-            "#22c55e",
-
-          downColor:
-            "#ef4444",
-
-          borderUpColor:
-            "#22c55e",
-
-          borderDownColor:
-            "#ef4444",
-
-          wickUpColor:
-            "#22c55e",
-
-          wickDownColor:
-            "#ef4444",
+        horzLine: {
+          color: start.crosshair,
+          width: 1,
+          style: LineStyle.Dashed,
+          labelBackgroundColor: start.labelBg,
         },
-      );
+      },
 
-    chartRef.current =
-      chart;
+      handleScroll: {
+        mouseWheel: true,
+        pressedMouseMove: true,
+        horzTouchDrag: true,
+        vertTouchDrag: false,
+      },
 
-    candleSeriesRef.current =
-      series;
+      handleScale: {
+        mouseWheel: true,
+        pinch: true,
+        axisPressedMouseMove: { time: true, price: true },
+        axisDoubleClickReset: { time: true, price: true },
+      },
+    });
 
-    markerRef.current =
-      createSeriesMarkers(
-        series,
-        [],
-      );
+    const candles = chart.addSeries(CandlestickSeries, {
+      upColor: UP,
+      downColor: DOWN,
+      borderUpColor: UP,
+      borderDownColor: DOWN,
+      wickUpColor: UP,
+      wickDownColor: DOWN,
+      priceLineVisible: true,
+      priceLineStyle: LineStyle.Dotted,
+      priceLineWidth: 1,
+      lastValueVisible: true,
+    });
 
-    function resize() {
-      if (!containerRef.current) {
+    const volume = chart.addSeries(HistogramSeries, {
+      priceFormat: { type: "volume" },
+      priceScaleId: "tick-volume",
+      priceLineVisible: false,
+      lastValueVisible: false,
+    });
+
+    chart.priceScale("tick-volume").applyOptions({
+      scaleMargins: { top: 0.87, bottom: 0 },
+    });
+
+    chart.subscribeCrosshairMove((param) => {
+      const point = param.seriesData?.get(candles);
+
+      if (!param.time || !point) {
+        setHoverCandle(null);
         return;
       }
 
-      chart.applyOptions({
-        width:
-          containerRef
-            .current
-            .clientWidth,
-      });
-    }
+      const volumePoint = param.seriesData.get(volume);
 
-    window.addEventListener(
-      "resize",
-      resize,
-    );
+      setHoverCandle({
+        open: point.open,
+        high: point.high,
+        low: point.low,
+        close: point.close,
+        volume: volumePoint?.value || 0,
+      });
+    });
+
+    chartRef.current = chart;
+    candleSeriesRef.current = candles;
+    volumeSeriesRef.current = volume;
+    markersRef.current = createSeriesMarkers(candles, []);
+
+    const lines = positionLinesRef.current;
 
     return () => {
-      window.removeEventListener(
-        "resize",
-        resize,
-      );
+      lines.clear();
+      askLineRef.current = null;
 
       try {
         chart.remove();
       } catch {
-        // ignore
+        /* already removed */
       }
 
-      chartRef.current =
-        null;
-
-      candleSeriesRef.current =
-        null;
-
-      markerRef.current =
-        null;
-
-      latestCandleRef.current =
-        null;
+      chartRef.current = null;
+      candleSeriesRef.current = null;
+      volumeSeriesRef.current = null;
+      markersRef.current = null;
+      lastCandleRef.current = null;
+      readyRef.current = false;
     };
+    // The chart is created once; theme changes are handled below.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  /*
-  ========================================================
-  LOAD HISTORICAL CANDLES
-  ========================================================
-  */
+  /* ---------------- THEME ---------------- */
 
   useEffect(() => {
-    if (
-      !symbol ||
-      !candleSeriesRef.current
-    ) {
-      return;
+    const chart = chartRef.current;
+
+    if (!chart) return;
+
+    chart.applyOptions({
+      layout: {
+        background: { color: palette.background },
+        textColor: palette.text,
+      },
+      grid: {
+        vertLines: { color: palette.grid },
+        horzLines: { color: palette.grid },
+      },
+      rightPriceScale: { borderColor: palette.border },
+      timeScale: { borderColor: palette.border },
+      crosshair: {
+        vertLine: {
+          color: palette.crosshair,
+          labelBackgroundColor: palette.labelBg,
+        },
+        horzLine: {
+          color: palette.crosshair,
+          labelBackgroundColor: palette.labelBg,
+        },
+      },
+    });
+
+    try {
+      localStorage.setItem("tradex_chart_theme", theme);
+    } catch {
+      /* storage not available */
     }
+  }, [theme, palette]);
+
+  /* ---------------- PRICE FORMAT (per symbol) ---------------- */
+
+  useEffect(() => {
+    const series = candleSeriesRef.current;
+
+    if (!series) return;
+
+    series.applyOptions({
+      priceFormat: {
+        type: "price",
+        precision: digits,
+        minMove: 1 / 10 ** digits,
+      },
+    });
+  }, [digits, symbol]);
+
+  /* ---------------- ONE LIVE TICK -> CURRENT CANDLE ---------------- */
+
+  const applyTick = useCallback(
+    (price) => {
+      const candles = candleSeriesRef.current;
+      const volumeSeries = volumeSeriesRef.current;
+
+      if (!candles || !readyRef.current || !price || price <= 0 || !frame) {
+        return;
+      }
+
+      const bucket = bucketStartSeconds(Date.now(), frame.ms);
+      const previous = lastCandleRef.current;
+
+      let next;
+
+      if (!previous || bucket > previous.time) {
+        /* a new candle opens at the previous close: no visual gaps */
+        const open = previous ? previous.close : price;
+
+        next = {
+          time: bucket,
+          open,
+          high: Math.max(open, price),
+          low: Math.min(open, price),
+          close: price,
+          volume: 1,
+        };
+      } else {
+        next = {
+          ...previous,
+          high: Math.max(previous.high, price),
+          low: Math.min(previous.low, price),
+          close: price,
+          volume: (previous.volume || 0) + 1,
+        };
+      }
+
+      lastCandleRef.current = next;
+
+      candles.update({
+        time: next.time,
+        open: next.open,
+        high: next.high,
+        low: next.low,
+        close: next.close,
+      });
+
+      volumeSeries?.update({
+        time: next.time,
+        value: next.volume,
+        color: volumeColor(next),
+      });
+
+      lastTickAtRef.current = Date.now();
+    },
+    [frame],
+  );
+
+  /* ---------------- LOAD HISTORY ---------------- */
+
+  useEffect(() => {
+    const candles = candleSeriesRef.current;
+    const volumeSeries = volumeSeriesRef.current;
+    const chart = chartRef.current;
+
+    if (!symbol || !candles || !volumeSeries || !chart) return undefined;
 
     let cancelled = false;
 
-    async function loadCandles() {
+    readyRef.current = false;
+    lastCandleRef.current = null;
+    candles.setData([]);
+    volumeSeries.setData([]);
+
+    async function load() {
       try {
         setLoading(true);
         setError("");
+        setLastCandle(null);
+        setHoverCandle(null);
 
-        const response =
-          await api.get(
-            `/market/candles/${symbol}`,
-            {
-              params: {
-                timeframe,
-                limit: 300,
-              },
-            },
-          );
+        const response = await api.get(`/market/candles/${symbol}`, {
+          params: { timeframe, limit: 400 },
+          timeout: 20000,
+        });
 
-        if (cancelled) {
-          return;
-        }
+        if (cancelled) return;
 
-        const candles =
-          response.data
-            ?.data
-            ?.candles ||
-          [];
+        const data = cleanCandles(response.data?.data?.candles || []);
 
-        const data =
-          candles
-            .map(
-              (candle) => ({
-                time:
-                  Math.floor(
-                    new Date(
-                      candle.openTime,
-                    ).getTime() /
-                      1000,
-                  ),
-
-                open:
-                  Number(
-                    candle.open,
-                  ),
-
-                high:
-                  Number(
-                    candle.high,
-                  ),
-
-                low:
-                  Number(
-                    candle.low,
-                  ),
-
-                close:
-                  Number(
-                    candle.close,
-                  ),
-              }),
-            )
-            .filter(
-              (candle) =>
-                Number.isFinite(
-                  candle.time,
-                ) &&
-                Number.isFinite(
-                  candle.open,
-                ) &&
-                Number.isFinite(
-                  candle.high,
-                ) &&
-                Number.isFinite(
-                  candle.low,
-                ) &&
-                Number.isFinite(
-                  candle.close,
-                ),
-            );
-
-        candleSeriesRef.current.setData(
-          data,
+        candles.setData(
+          data.map(({ time, open, high, low, close }) => ({
+            time,
+            open,
+            high,
+            low,
+            close,
+          })),
         );
 
-        latestCandleRef.current =
-          data.length
-            ? {
-                ...data[
-                  data.length - 1
-                ],
-              }
-            : null;
-
-        if (
-          chartRef.current &&
-          data.length
-        ) {
-          chartRef.current
-            .timeScale()
-            .fitContent();
-        }
-      } catch (error) {
-        console.error(
-          "Chart candle error:",
-          error,
+        volumeSeries.setData(
+          data.map((candle) => ({
+            time: candle.time,
+            value: candle.volume,
+            color: volumeColor(candle),
+          })),
         );
+
+        lastCandleRef.current = data.length ? { ...data[data.length - 1] } : null;
+        readyRef.current = true;
+
+        if (data.length) {
+          /* Show a sensible number of candles instead of squeezing all */
+          const lastIndex = data.length - 1;
+
+          chart.timeScale().applyOptions({ barSpacing: BAR_SPACING });
+          chart.timeScale().setVisibleLogicalRange({
+            from: Math.max(lastIndex - VISIBLE_BARS, -2),
+            to: lastIndex + 10,
+          });
+
+          chart.priceScale("right").applyOptions({ autoScale: true });
+        } else {
+          setError("No chart data yet. Waiting for live prices...");
+        }
+
+        /* apply the newest live price immediately */
+        if (bidRef.current > 0) {
+          applyTick(bidRef.current);
+        }
+      } catch (loadError) {
+        console.error("Chart candle error:", loadError);
 
         if (!cancelled) {
+          readyRef.current = true;
+
           setError(
-            "Unable to load historical market data.",
+            loadError.userMessage || "Unable to load market data for the chart.",
           );
         }
       } finally {
-        if (!cancelled) {
-          setLoading(false);
-        }
+        if (!cancelled) setLoading(false);
       }
     }
 
-    loadCandles();
+    load();
 
     return () => {
       cancelled = true;
     };
-  }, [
-    symbol,
-    timeframe,
-  ]);
+  }, [symbol, timeframe, reloadKey, applyTick]);
 
-  /*
-  ========================================================
-  LIVE BID/ASK → CURRENT CANDLE
-  ========================================================
-  */
+  /* ---------------- LIVE BID -> candle + volume ---------------- */
 
   useEffect(() => {
-    const series =
-      candleSeriesRef.current;
+    if (!currentBid || currentBid <= 0) return;
 
-    if (!series) {
-      return;
+    if (currentBid !== lastBidRef.current) {
+      lastBidRef.current = currentBid;
+      applyTick(currentBid);
     }
+  }, [currentBid, applyTick]);
 
-    const currentBid =
-      safeNumber(bid);
+  /* keep the OHLC legend and LIVE badge in sync (throttled) */
+  useEffect(() => {
+    const timer = setInterval(() => {
+      const candle = lastCandleRef.current;
 
-    if (
-      currentBid === null ||
-      currentBid <= 0
-    ) {
-      return;
-    }
-
-    const timeframeMs =
-      getTimeframeMs(
-        timeframe,
-      );
-
-    const bucket =
-      Math.floor(
-        Date.now() /
-          timeframeMs,
-      ) * timeframeMs;
-
-    const bucketSeconds =
-      Math.floor(
-        bucket / 1000,
-      );
-
-    let candle =
-      latestCandleRef.current;
-
-    if (
-      !candle ||
-      bucketSeconds >
-        candle.time
-    ) {
-      candle = {
-        time:
-          bucketSeconds,
-
-        open:
-          currentBid,
-
-        high:
-          currentBid,
-
-        low:
-          currentBid,
-
-        close:
-          currentBid,
-      };
-    } else if (
-      candle.time ===
-      bucketSeconds
-    ) {
-      candle = {
-        ...candle,
-
-        high: Math.max(
-          candle.high,
-          currentBid,
-        ),
-
-        low: Math.min(
-          candle.low,
-          currentBid,
-        ),
-
-        close:
-          currentBid,
-      };
-    }
-
-    series.update(
-      candle,
-    );
-
-    latestCandleRef.current =
-      candle;
-
-    /*
-    --------------------------------------------
-    BID LINE
-    --------------------------------------------
-    */
-
-    if (bidLineRef.current) {
-      try {
-        series.removePriceLine(
-          bidLineRef.current,
+      if (candle) {
+        setLastCandle((previous) =>
+          previous &&
+          previous.time === candle.time &&
+          previous.close === candle.close &&
+          previous.high === candle.high &&
+          previous.low === candle.low &&
+          previous.volume === candle.volume
+            ? previous
+            : { ...candle },
         );
-      } catch {
-        // ignore
       }
+
+      setLive(Date.now() - lastTickAtRef.current < 15000);
+    }, 400);
+
+    return () => clearInterval(timer);
+  }, []);
+
+  /* ---------------- ASK LINE (updated in place) ---------------- */
+
+  useEffect(() => {
+    const series = candleSeriesRef.current;
+
+    if (!series) return;
+
+    if (!currentAsk || currentAsk <= 0) {
+      if (askLineRef.current) {
+        series.removePriceLine(askLineRef.current);
+        askLineRef.current = null;
+      }
+
+      return;
     }
 
-    bidLineRef.current =
-      series.createPriceLine({
-        price:
-          currentBid,
+    const options = {
+      price: currentAsk,
+      color: ASK_COLOR,
+      lineWidth: 1,
+      lineStyle: LineStyle.Dotted,
+      axisLabelVisible: true,
+      axisLabelColor: ASK_COLOR,
+      axisLabelTextColor: "#ffffff",
+      title: "ASK",
+    };
 
-        color:
-          "#38bdf8",
+    if (askLineRef.current) {
+      askLineRef.current.applyOptions(options);
+    } else {
+      askLineRef.current = series.createPriceLine(options);
+    }
+  }, [currentAsk]);
 
-        lineWidth: 1,
+  /* ---------------- OPEN POSITIONS: ENTRY / SL / TP ---------------- */
 
-        lineStyle:
-          LineStyle.Dashed,
+  const openPositions = useMemo(() => {
+    const current = String(symbol).toUpperCase();
 
-        axisLabelVisible:
-          true,
+    return positions.filter(
+      (position) =>
+        String(position.symbol || "").toUpperCase() === current &&
+        String(position.status || "").toLowerCase() === "open",
+    );
+  }, [positions, symbol]);
 
-        title: "BID",
+  useEffect(() => {
+    const series = candleSeriesRef.current;
+
+    if (!series) return;
+
+    const lines = positionLinesRef.current;
+    const wanted = new Map();
+
+    openPositions.forEach((position) => {
+      const id = String(position.id);
+      const side = String(position.side || "").toUpperCase();
+      const volume = toNumber(position.volume) || 0;
+      const entry = toNumber(position.entry_price);
+      const contractSize = toNumber(position.contract_size) || 1;
+      const direction = side === "BUY" ? 1 : -1;
+
+      if (entry === null || entry <= 0) return;
+
+      const livePnl =
+        currentBid && currentAsk
+          ? ((side === "BUY" ? currentBid : currentAsk) - entry) *
+            direction *
+            volume *
+            contractSize
+          : toNumber(position.unrealized_pnl) || 0;
+
+      const sideColor = side === "BUY" ? BUY_BLUE : DOWN;
+
+      wanted.set(`${id}:entry`, {
+        price: entry,
+        color: sideColor,
+        lineWidth: 2,
+        lineStyle: LineStyle.Solid,
+        axisLabelVisible: true,
+        axisLabelColor: sideColor,
+        axisLabelTextColor: "#ffffff",
+        title: `${side} ${volume.toFixed(2)}  ${money(livePnl)}`,
       });
 
-    /*
-    --------------------------------------------
-    ASK LINE
-    --------------------------------------------
-    */
+      const stopLoss = toNumber(position.stop_loss);
 
-    const currentAsk =
-      safeNumber(ask);
+      if (stopLoss && stopLoss > 0) {
+        const slPnl = (stopLoss - entry) * direction * volume * contractSize;
 
-    if (
-      currentAsk !== null &&
-      currentAsk > 0
-    ) {
-      if (
-        askLineRef.current
-      ) {
+        wanted.set(`${id}:sl`, {
+          price: stopLoss,
+          color: DOWN,
+          lineWidth: 1,
+          lineStyle: LineStyle.Dashed,
+          axisLabelVisible: true,
+          axisLabelColor: DOWN,
+          axisLabelTextColor: "#ffffff",
+          title: `SL ${money(slPnl)}`,
+        });
+      }
+
+      const takeProfit = toNumber(position.take_profit);
+
+      if (takeProfit && takeProfit > 0) {
+        const tpPnl = (takeProfit - entry) * direction * volume * contractSize;
+
+        wanted.set(`${id}:tp`, {
+          price: takeProfit,
+          color: UP,
+          lineWidth: 1,
+          lineStyle: LineStyle.Dashed,
+          axisLabelVisible: true,
+          axisLabelColor: UP,
+          axisLabelTextColor: "#ffffff",
+          title: `TP ${money(tpPnl)}`,
+        });
+      }
+    });
+
+    /* remove lines of closed positions / removed SL-TP */
+    for (const [key, line] of Array.from(lines.entries())) {
+      if (!wanted.has(key)) {
         try {
-          series.removePriceLine(
-            askLineRef.current,
-          );
+          series.removePriceLine(line);
         } catch {
-          // ignore
+          /* already removed */
+        }
+
+        lines.delete(key);
+      }
+    }
+
+    /* create new lines, update existing ones in place */
+    for (const [key, options] of wanted) {
+      const existing = lines.get(key);
+
+      if (existing) {
+        existing.applyOptions(options);
+      } else {
+        lines.set(key, series.createPriceLine(options));
+      }
+    }
+  }, [openPositions, currentBid, currentAsk]);
+
+  /* position lines belong to one symbol: clear them when it changes */
+  useEffect(() => {
+    const series = candleSeriesRef.current;
+    const lines = positionLinesRef.current;
+
+    return () => {
+      if (!series) return;
+
+      for (const line of lines.values()) {
+        try {
+          series.removePriceLine(line);
+        } catch {
+          /* already removed */
         }
       }
 
-      askLineRef.current =
-        series.createPriceLine({
-          price:
-            currentAsk,
-
-          color:
-            "#f59e0b",
-
-          lineWidth: 1,
-
-          lineStyle:
-            LineStyle.Dashed,
-
-          axisLabelVisible:
-            true,
-
-          title: "ASK",
-        });
-    }
-  }, [
-    bid,
-    ask,
-    timeframe,
-  ]);
-
-  /*
-  ========================================================
-  POSITION LINES
-  ========================================================
-  */
-
-  useEffect(() => {
-    const series =
-      candleSeriesRef.current;
-
-    if (!series) {
-      return;
-    }
-
-    positionLinesRef.current.forEach(
-      (line) => {
-        try {
-          series.removePriceLine(
-            line,
-          );
-        } catch {
-          // ignore
-        }
-      },
-    );
-
-    positionLinesRef.current =
-      [];
-
-    const currentSymbol =
-      String(symbol)
-        .toUpperCase();
-
-    const openPositions =
-      positions.filter(
-        (position) =>
-          String(
-            position.symbol ||
-              "",
-          ).toUpperCase() ===
-            currentSymbol &&
-          String(
-            position.status ||
-              "",
-          ).toLowerCase() ===
-            "open",
-      );
-
-    openPositions.forEach(
-      (position) => {
-        const side =
-          String(
-            position.side ||
-              "",
-          ).toUpperCase();
-
-        const volume =
-          Number(
-            position.volume,
-          );
-
-        const entry =
-          safeNumber(
-            position.entry_price,
-          );
-
-        if (
-          entry === null
-        ) {
-          return;
-        }
-
-        const label =
-          `${side} ${
-            Number.isFinite(
-              volume,
-            )
-              ? volume.toFixed(2)
-              : "0.00"
-          }`;
-
-        /*
-        ----------------------------------------
-        ENTRY
-        ----------------------------------------
-        */
-
-        const entryLine =
-          series.createPriceLine({
-            price: entry,
-
-            color:
-              side === "BUY"
-                ? "#22c55e"
-                : "#ef4444",
-
-            lineWidth: 2,
-
-            lineStyle:
-              LineStyle.Solid,
-
-            axisLabelVisible:
-              true,
-
-            title:
-              `${label} ENTRY`,
-          });
-
-        positionLinesRef.current.push(
-          entryLine,
-        );
-
-        /*
-        ----------------------------------------
-        STOP LOSS
-        ----------------------------------------
-        */
-
-        const sl =
-          safeNumber(
-            position.stop_loss,
-          );
-
-        if (
-          sl !== null &&
-          sl > 0
-        ) {
-          const slLine =
-            series.createPriceLine({
-              price: sl,
-
-              color:
-                "#ef4444",
-
-              lineWidth: 2,
-
-              lineStyle:
-                LineStyle.Dashed,
-
-              axisLabelVisible:
-                true,
-
-              title:
-                `${label} STOP LOSS`,
-            });
-
-          positionLinesRef.current.push(
-            slLine,
-          );
-        }
-
-        /*
-        ----------------------------------------
-        TAKE PROFIT
-        ----------------------------------------
-        */
-
-        const tp =
-          safeNumber(
-            position.take_profit,
-          );
-
-        if (
-          tp !== null &&
-          tp > 0
-        ) {
-          const tpLine =
-            series.createPriceLine({
-              price: tp,
-
-              color:
-                "#22c55e",
-
-              lineWidth: 2,
-
-              lineStyle:
-                LineStyle.Dashed,
-
-              axisLabelVisible:
-                true,
-
-              title:
-                `${label} TAKE PROFIT`,
-            });
-
-          positionLinesRef.current.push(
-            tpLine,
-          );
-        }
-      },
-    );
-
-    return () => {
-      positionLinesRef.current.forEach(
-        (line) => {
-          try {
-            series.removePriceLine(
-              line,
-            );
-          } catch {
-            // ignore
-          }
-        },
-      );
-
-      positionLinesRef.current =
-        [];
+      lines.clear();
     };
-  }, [
-    positions,
-    symbol,
-  ]);
+  }, [symbol]);
 
-  /*
-  ========================================================
-  BUY / SELL MARKERS
-  ========================================================
-  */
+  /* ---------------- BUY / SELL ARROWS ---------------- */
 
   useEffect(() => {
-    if (
-      !markerRef.current
-    ) {
-      return;
+    const markers = markersRef.current;
+
+    if (!markers || !frame) return;
+
+    const list = [];
+
+    openPositions.forEach((position) => {
+      const openedAt = new Date(position.opened_at).getTime();
+
+      if (!Number.isFinite(openedAt)) return;
+
+      const side = String(position.side || "").toUpperCase();
+      const volume = toNumber(position.volume) || 0;
+
+      list.push({
+        time: bucketStartSeconds(openedAt, frame.ms),
+        position: side === "BUY" ? "belowBar" : "aboveBar",
+        shape: side === "BUY" ? "arrowUp" : "arrowDown",
+        color: side === "BUY" ? BUY_BLUE : DOWN,
+        text: `${side} ${volume.toFixed(2)}`,
+      });
+    });
+
+    list.sort((a, b) => a.time - b.time);
+
+    try {
+      markers.setMarkers(list);
+    } catch {
+      /* marker time outside the loaded data */
+    }
+  }, [openPositions, frame, lastCandle?.time]);
+
+  /* ---------------- refresh after the tab was hidden ---------------- */
+
+  useEffect(() => {
+    function onVisibility() {
+      if (document.hidden) {
+        hiddenAtRef.current = Date.now();
+        return;
+      }
+
+      if (hiddenAtRef.current && Date.now() - hiddenAtRef.current > 30000) {
+        setReloadKey((value) => value + 1);
+      }
+
+      hiddenAtRef.current = 0;
     }
 
-    const currentSymbol =
-      String(symbol)
-        .toUpperCase();
+    document.addEventListener("visibilitychange", onVisibility);
 
-    const timeframeMs =
-      getTimeframeMs(
-        timeframe,
-      );
+    return () => document.removeEventListener("visibilitychange", onVisibility);
+  }, []);
 
-    const markers = [];
+  /* ---------------- UI ---------------- */
 
-    positions
-      .filter(
-        (position) =>
-          String(
-            position.symbol ||
-              "",
-          ).toUpperCase() ===
-            currentSymbol &&
-          String(
-            position.status ||
-              "",
-          ).toLowerCase() ===
-            "open",
-      )
-      .forEach(
-        (position) => {
-          const openedAt =
-            new Date(
-              position.opened_at,
-            ).getTime();
+  const shown = hoverCandle || lastCandle;
 
-          if (
-            !Number.isFinite(
-              openedAt,
-            )
-          ) {
-            return;
-          }
-
-          const candleTime =
-            Math.floor(
-              openedAt /
-                timeframeMs,
-            ) *
-            timeframeMs;
-
-          const markerTime =
-            Math.floor(
-              candleTime / 1000,
-            );
-
-          const side =
-            String(
-              position.side ||
-                "",
-            ).toUpperCase();
-
-          const volume =
-            Number(
-              position.volume,
-            );
-
-          const text =
-            `${side} ${
-              Number.isFinite(
-                volume,
-              )
-                ? volume.toFixed(2)
-                : ""
-            }`;
-
-          if (
-            side === "BUY"
-          ) {
-            markers.push({
-              time:
-                markerTime,
-
-              position:
-                "belowBar",
-
-              color:
-                "#22c55e",
-
-              shape:
-                "arrowUp",
-
-              text,
-            });
-          }
-
-          if (
-            side === "SELL"
-          ) {
-            markers.push({
-              time:
-                markerTime,
-
-              position:
-                "aboveBar",
-
-              color:
-                "#ef4444",
-
-              shape:
-                "arrowDown",
-
-              text,
-            });
-          }
-        },
-      );
-
-    markerRef.current.setMarkers(
-      markers,
-    );
-  }, [
-    positions,
-    symbol,
-    timeframe,
-  ]);
-
-  const digits =
-    getDigits(symbol);
-
-  const currentBid =
-    safeNumber(bid);
-
-  const currentAsk =
-    safeNumber(ask);
+  const change = shown ? shown.close - shown.open : 0;
+  const changePercent = shown && shown.open ? (change / shown.open) * 100 : 0;
+  const trend = change >= 0 ? "up" : "down";
 
   const spread =
-    currentBid !== null &&
-    currentAsk !== null
-      ? currentAsk -
-        currentBid
-      : null;
+    currentBid && currentAsk ? Math.max(currentAsk - currentBid, 0) : null;
+
+  /* gold / bitcoin: price units, forex: pips */
+  const spreadText =
+    spread === null
+      ? "--"
+      : digits === 2
+        ? spread.toFixed(2)
+        : (spread * 10 ** (digits - 1)).toFixed(1);
+
+  function goToLatest() {
+    chartRef.current?.timeScale().scrollToRealTime();
+  }
+
+  function zoomBy(factor) {
+    const timeScale = chartRef.current?.timeScale();
+
+    if (!timeScale) return;
+
+    const spacing = timeScale.options().barSpacing || BAR_SPACING;
+
+    timeScale.applyOptions({
+      barSpacing: Math.min(Math.max(spacing * factor, 2), 40),
+    });
+  }
 
   return (
-    <div
-      style={{
-        width: "100%",
-        background:
-          "#080d18",
-        border:
-          "1px solid #1f2937",
-        borderRadius:
-          "12px",
-        overflow:
-          "hidden",
-      }}
-    >
-      {/* HEADER */}
+    <div className={`tvc tvc-${theme}`}>
+      <div className="tvc-toolbar">
+        <div className="tvc-title">
+          <strong>{symbol}</strong>
 
-      <div
-        style={{
-          display: "flex",
-          alignItems:
-            "center",
-          justifyContent:
-            "space-between",
-          gap: "12px",
-          padding:
-            "12px 16px",
-          borderBottom:
-            "1px solid #1f2937",
-          flexWrap:
-            "wrap",
-        }}
-      >
-        <div>
-          <div
-            style={{
-              display:
-                "flex",
-              alignItems:
-                "center",
-              gap: "8px",
-            }}
-          >
-            <strong
-              style={{
-                color:
-                  "#f8fafc",
-                fontSize:
-                  "16px",
-              }}
-            >
-              {symbol}
-            </strong>
-
-            <span
-              style={{
-                background:
-                  "#14532d",
-                color:
-                  "#86efac",
-                borderRadius:
-                  "999px",
-                padding:
-                  "3px 8px",
-                fontSize:
-                  "11px",
-                fontWeight:
-                  700,
-              }}
-            >
-              LIVE
-            </span>
-          </div>
-
-          <div
-            style={{
-              marginTop:
-                "5px",
-              display:
-                "flex",
-              gap:
-                "12px",
-              fontSize:
-                "12px",
-              flexWrap:
-                "wrap",
-            }}
-          >
-            <span
-              style={{
-                color:
-                  "#38bdf8",
-              }}
-            >
-              BID{" "}
-              {currentBid !== null
-                ? currentBid.toFixed(
-                    digits,
-                  )
-                : "--"}
-            </span>
-
-            <span
-              style={{
-                color:
-                  "#f59e0b",
-              }}
-            >
-              ASK{" "}
-              {currentAsk !== null
-                ? currentAsk.toFixed(
-                    digits,
-                  )
-                : "--"}
-            </span>
-
-            <span
-              style={{
-                color:
-                  "#94a3b8",
-              }}
-            >
-              SPREAD{" "}
-              {spread !== null
-                ? spread.toFixed(
-                    digits,
-                  )
-                : "--"}
-            </span>
-          </div>
+          <span className={`tvc-live ${live ? "on" : "off"}`}>
+            <i />
+            {live ? "LIVE" : "WAITING"}
+          </span>
         </div>
 
-        <div
-          style={{
-            display:
-              "flex",
-            gap: "4px",
-          }}
-        >
-          {TIMEFRAMES.map(
-            (item) => (
-              <button
-                key={
-                  item.value
-                }
-                type="button"
-                onClick={() =>
-                  setTimeframe(
-                    item.value,
-                  )
-                }
-                style={{
-                  border:
-                    "1px solid #263247",
-                  background:
-                    timeframe ===
-                    item.value
-                      ? "#1e293b"
-                      : "transparent",
-                  color:
-                    timeframe ===
-                    item.value
-                      ? "#f8fafc"
-                      : "#94a3b8",
-                  borderRadius:
-                    "6px",
-                  padding:
-                    "6px 10px",
-                  cursor:
-                    "pointer",
-                }}
-              >
-                {item.label}
-              </button>
-            ),
+        <div className="tvc-timeframes">
+          {TIMEFRAMES.map((item) => (
+            <button
+              key={item.value}
+              type="button"
+              className={timeframe === item.value ? "active" : ""}
+              onClick={() => setTimeframe(item.value)}
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
+
+        <div className="tvc-actions">
+          <button type="button" title="Zoom out" onClick={() => zoomBy(0.8)}>
+            −
+          </button>
+
+          <button type="button" title="Zoom in" onClick={() => zoomBy(1.25)}>
+            +
+          </button>
+
+          <button type="button" title="Go to latest candle" onClick={goToLatest}>
+            ⏭
+          </button>
+
+          <button
+            type="button"
+            title="Switch light / dark chart"
+            onClick={() =>
+              setTheme((value) => (value === "dark" ? "light" : "dark"))
+            }
+          >
+            {theme === "dark" ? "☀" : "☾"}
+          </button>
+        </div>
+      </div>
+
+      <div className="tvc-body">
+        <div className="tvc-chart" ref={containerRef} />
+
+        <div className="tvc-overlay">
+          <div className="tvc-legend">
+            <span className="tvc-name">
+              {SYMBOL_NAMES[symbol] || symbol} · {timeframe.toUpperCase()} · TRADEX
+            </span>
+
+            {shown && (
+              <span className={`tvc-ohlc ${trend}`}>
+                <b>O</b>
+                {shown.open.toFixed(digits)} <b>H</b>
+                {shown.high.toFixed(digits)} <b>L</b>
+                {shown.low.toFixed(digits)} <b>C</b>
+                {shown.close.toFixed(digits)}{" "}
+                <em>
+                  {change >= 0 ? "+" : ""}
+                  {change.toFixed(digits)} ({changePercent >= 0 ? "+" : ""}
+                  {changePercent.toFixed(2)}%)
+                </em>
+              </span>
+            )}
+          </div>
+
+          <div className="tvc-quote">
+            <button
+              type="button"
+              className="tvc-sell"
+              onClick={onSell}
+              disabled={!currentBid}
+            >
+              <strong>{currentBid ? currentBid.toFixed(digits) : "--"}</strong>
+              <span>SELL</span>
+            </button>
+
+            <div className="tvc-spread">{spreadText}</div>
+
+            <button
+              type="button"
+              className="tvc-buy"
+              onClick={onBuy}
+              disabled={!currentAsk}
+            >
+              <strong>{currentAsk ? currentAsk.toFixed(digits) : "--"}</strong>
+              <span>BUY</span>
+            </button>
+          </div>
+
+          {shown && (
+            <div className="tvc-volume">
+              Vol · Ticks <b>{formatVolume(shown.volume)}</b>
+            </div>
           )}
         </div>
-      </div>
 
-      {/* LEGEND */}
+        {loading && <div className="tvc-badge">Loading chart…</div>}
 
-      <div
-        style={{
-          display:
-            "flex",
-          gap:
-            "14px",
-          padding:
-            "8px 16px",
-          borderBottom:
-            "1px solid #172033",
-          color:
-            "#94a3b8",
-          fontSize:
-            "11px",
-          flexWrap:
-            "wrap",
-        }}
-      >
-        <span>
-          <b
-            style={{
-              color:
-                "#38bdf8",
-            }}
-          >
-            ━━
-          </b>{" "}
-          BID
-        </span>
-
-        <span>
-          <b
-            style={{
-              color:
-                "#f59e0b",
-            }}
-          >
-            ━━
-          </b>{" "}
-          ASK
-        </span>
-
-        <span>
-          <b
-            style={{
-              color:
-                "#22c55e",
-            }}
-          >
-            ━━
-          </b>{" "}
-          BUY / TP
-        </span>
-
-        <span>
-          <b
-            style={{
-              color:
-                "#ef4444",
-            }}
-          >
-            ━━
-          </b>{" "}
-          SELL / SL
-        </span>
-      </div>
-
-      {/* CHART */}
-
-      <div
-        style={{
-          position:
-            "relative",
-        }}
-      >
-        <div
-          ref={
-            containerRef
-          }
-          style={{
-            width:
-              "100%",
-            minHeight:
-              "500px",
-          }}
-        />
-
-        {loading && (
-          <div
-            style={{
-              position:
-                "absolute",
-              top:
-                "12px",
-              left:
-                "12px",
-              background:
-                "rgba(8,13,24,.9)",
-              color:
-                "#94a3b8",
-              padding:
-                "6px 10px",
-              borderRadius:
-                "6px",
-              fontSize:
-                "12px",
-            }}
-          >
-            Loading chart...
-          </div>
-        )}
-
-        {error && (
-          <div
-            style={{
-              position:
-                "absolute",
-              top:
-                "12px",
-              right:
-                "12px",
-              background:
-                "rgba(127,29,29,.95)",
-              color:
-                "#fecaca",
-              padding:
-                "7px 10px",
-              borderRadius:
-                "6px",
-              fontSize:
-                "12px",
-            }}
-          >
+        {error && !loading && (
+          <div className="tvc-badge error">
             {error}
+
+            <button
+              type="button"
+              onClick={() => setReloadKey((value) => value + 1)}
+            >
+              Retry
+            </button>
           </div>
         )}
       </div>

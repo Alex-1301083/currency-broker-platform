@@ -17,12 +17,15 @@ function errorHandler(err, req, res, next) {
       ? err.statusCode
       : 500;
 
+  const publicMessage =
+    statusCode === 500
+      ? "Internal server error"
+      : err.message || "Request failed";
+
   const response = {
     success: false,
-    error:
-      statusCode === 500
-        ? "Internal server error"
-        : err.message || "Request failed",
+    message: publicMessage,
+    error: publicMessage,
   };
 
   if (process.env.NODE_ENV === "development") {
