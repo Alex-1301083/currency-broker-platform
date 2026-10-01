@@ -17,6 +17,8 @@ async function checkHttpService(url) {
   }, HEALTH_TIMEOUT_MS);
 
   try {
+    console.log(`[SYSTEM HEALTH] Checking: ${url}`);
+
     const response = await fetch(url, {
       method: "GET",
       signal: controller.signal,
@@ -30,22 +32,43 @@ async function checkHttpService(url) {
       data = null;
     }
 
+    console.log(
+      `[SYSTEM HEALTH] ${url} -> HTTP ${response.status}`
+    );
+
     return {
-      healthy: response.ok && data?.success === true,
+      healthy:
+        response.ok &&
+        data?.success === true,
 
       statusCode: response.status,
       data,
     };
   } catch (error) {
-    console.error(`[SYSTEM HEALTH] Failed to reach: ${url}`);
+    console.error(
+      `[SYSTEM HEALTH] FAILED: ${url}`
+    );
 
-    console.error(`[SYSTEM HEALTH] Error:`, error);
+    console.error(
+      `[SYSTEM HEALTH] name: ${error.name}`
+    );
+
+    console.error(
+      `[SYSTEM HEALTH] message: ${error.message}`
+    );
+
+    console.error(
+      `[SYSTEM HEALTH] cause:`,
+      error.cause || "none"
+    );
 
     return {
       healthy: false,
       statusCode: null,
       error:
-        error.name === "AbortError" ? "Health check timeout" : error.message,
+        error.name === "AbortError"
+          ? "Health check timeout"
+          : error.message,
     };
   } finally {
     clearTimeout(timeout);
