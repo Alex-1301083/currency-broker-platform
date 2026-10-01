@@ -1,14 +1,11 @@
 const MARKET_DATA_HEALTH_URL =
-  process.env.MARKET_DATA_HEALTH_URL ||
-  "http://localhost:5002/health";
+  process.env.MARKET_DATA_HEALTH_URL || "http://localhost:5002/health";
 
 const PROVIDER_BRIDGE_HEALTH_URL =
-  process.env.PROVIDER_BRIDGE_HEALTH_URL ||
-  "http://localhost:5003/health";
+  process.env.PROVIDER_BRIDGE_HEALTH_URL || "http://localhost:5003/health";
 
 const WEBSOCKET_HEALTH_URL =
-  process.env.WS_HEALTH_URL ||
-  "http://localhost:5001/health";
+  process.env.WS_HEALTH_URL || "http://localhost:5001/health";
 
 const HEALTH_TIMEOUT_MS = 3000;
 
@@ -34,21 +31,21 @@ async function checkHttpService(url) {
     }
 
     return {
-      healthy:
-        response.ok &&
-        data?.success === true,
+      healthy: response.ok && data?.success === true,
 
       statusCode: response.status,
       data,
     };
   } catch (error) {
+    console.error(`[SYSTEM HEALTH] Failed to reach: ${url}`);
+
+    console.error(`[SYSTEM HEALTH] Error:`, error);
+
     return {
       healthy: false,
       statusCode: null,
       error:
-        error.name === "AbortError"
-          ? "Health check timeout"
-          : error.message,
+        error.name === "AbortError" ? "Health check timeout" : error.message,
     };
   } finally {
     clearTimeout(timeout);
@@ -81,25 +78,14 @@ function setDatabaseHealthChecker(databaseHealthChecker) {
 }
 
 async function getSystemHealth() {
-  const [
-    database,
-    marketData,
-    providerBridge,
-    websocket,
-  ] = await Promise.all([
+  const [database, marketData, providerBridge, websocket] = await Promise.all([
     checkDatabase(),
 
-    checkHttpService(
-      MARKET_DATA_HEALTH_URL
-    ),
+    checkHttpService(MARKET_DATA_HEALTH_URL),
 
-    checkHttpService(
-      PROVIDER_BRIDGE_HEALTH_URL
-    ),
+    checkHttpService(PROVIDER_BRIDGE_HEALTH_URL),
 
-    checkHttpService(
-      WEBSOCKET_HEALTH_URL
-    ),
+    checkHttpService(WEBSOCKET_HEALTH_URL),
   ]);
 
   const healthy =
@@ -111,15 +97,11 @@ async function getSystemHealth() {
   return {
     healthy,
 
-    status: healthy
-      ? "healthy"
-      : "degraded",
+    status: healthy ? "healthy" : "degraded",
 
     services: {
       database: {
-        status: database.healthy
-          ? "connected"
-          : "disconnected",
+        status: database.healthy ? "connected" : "disconnected",
 
         ...(database.error
           ? {
@@ -129,9 +111,7 @@ async function getSystemHealth() {
       },
 
       marketData: {
-        status: marketData.healthy
-          ? "healthy"
-          : "unhealthy",
+        status: marketData.healthy ? "healthy" : "unhealthy",
 
         ...(marketData.error
           ? {
@@ -141,9 +121,7 @@ async function getSystemHealth() {
       },
 
       providerBridge: {
-        status: providerBridge.healthy
-          ? "healthy"
-          : "unhealthy",
+        status: providerBridge.healthy ? "healthy" : "unhealthy",
 
         ...(providerBridge.error
           ? {
@@ -153,9 +131,7 @@ async function getSystemHealth() {
       },
 
       websocket: {
-        status: websocket.healthy
-          ? "healthy"
-          : "unhealthy",
+        status: websocket.healthy ? "healthy" : "unhealthy",
 
         url: WEBSOCKET_HEALTH_URL,
 
