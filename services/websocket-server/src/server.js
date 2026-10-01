@@ -1,6 +1,7 @@
 const WebSocket = require("ws");
 const jwt = require("jsonwebtoken");
 const path = require("path");
+const http = require("http");
 
 require("dotenv").config({
   path: path.resolve(__dirname, "../../../.env"),
@@ -8,17 +9,13 @@ require("dotenv").config({
 
 const PORT = Number(process.env.WS_PORT || process.env.PORT || 5001);
 
-
 const JWT_SECRET = process.env.JWT_SECRET;
-const MARKET_DATA_WS_SECRET =
-  process.env.MARKET_DATA_WS_SECRET;
+const MARKET_DATA_WS_SECRET = process.env.MARKET_DATA_WS_SECRET;
 
 const HEARTBEAT_INTERVAL = 30000;
 
 if (!JWT_SECRET) {
-  throw new Error(
-    "JWT_SECRET is required for WebSocket authentication",
-  );
+  throw new Error("JWT_SECRET is required for WebSocket authentication");
 }
 
 if (!MARKET_DATA_WS_SECRET) {
@@ -27,8 +24,38 @@ if (!MARKET_DATA_WS_SECRET) {
   );
 }
 
+const httpServer = http.createServer((req, res) => {
+  if (req.method === "GET" && req.url === "/health") {
+    res.writeHead(200, {
+      "Content-Type": "application/json",
+    });
+
+    res.end(
+      JSON.stringify({
+        success: true,
+        service: "websocket-server",
+        status: "healthy",
+        timestamp: new Date().toISOString(),
+      }),
+    );
+
+    return;
+  }
+
+  res.writeHead(404, {
+    "Content-Type": "application/json",
+  });
+
+  res.end(
+    JSON.stringify({
+      success: false,
+      message: "Route not found",
+    }),
+  );
+});
+
 const wss = new WebSocket.Server({
-  port: PORT,
+  server: httpServer,
 });
 
 // ==========================================
@@ -48,8 +75,7 @@ function verifyJwtToken(token) {
 // ==========================================
 
 function getSubprotocols(request) {
-  const protocols =
-    request.headers["sec-websocket-protocol"];
+  const protocols = request.headers["sec-websocket-protocol"];
 
   if (!protocols) {
     return [];
@@ -72,20 +98,14 @@ function authenticateConnection(request) {
   // MARKET DATA PUBLISHER
   // ----------------------------------------
 
-  const marketDataProtocol = protocols.find(
-    (protocol) =>
-      protocol.startsWith("market-data."),
+  const marketDataProtocol = protocols.find((protocol) =>
+    protocol.startsWith("market-data."),
   );
 
   if (marketDataProtocol) {
-    const suppliedSecret =
-      marketDataProtocol.substring(
-        "market-data.".length,
-      );
+    const suppliedSecret = marketDataProtocol.substring("market-data.".length);
 
-    if (
-      suppliedSecret === MARKET_DATA_WS_SECRET
-    ) {
+    if (suppliedSecret === MARKET_DATA_WS_SECRET) {
       return {
         type: "market-data",
         authenticated: true,
@@ -98,18 +118,12 @@ function authenticateConnection(request) {
   // NORMAL USER
   // ----------------------------------------
 
-  const bearerProtocol = protocols.find(
-    (protocol) =>
-      protocol
-        .toLowerCase()
-        .startsWith("bearer."),
+  const bearerProtocol = protocols.find((protocol) =>
+    protocol.toLowerCase().startsWith("bearer."),
   );
 
   if (bearerProtocol) {
-    const token =
-      bearerProtocol.substring(
-        "bearer.".length,
-      );
+    const token = bearerProtocol.substring("bearer.".length);
 
     const payload = verifyJwtToken(token);
 
@@ -134,25 +148,16 @@ function broadcast(message) {
   const data = JSON.stringify(message);
 
   wss.clients.forEach((client) => {
-    if (
-      client.readyState === WebSocket.OPEN &&
-      client.isAuthenticated
-    ) {
+    if (client.readyState === WebSocket.OPEN && client.isAuthenticated) {
       try {
         client.send(data);
       } catch (error) {
-        console.error(
-          "WebSocket broadcast error:",
-          error.message,
-        );
+        console.error("WebSocket broadcast error:", error.message);
 
         try {
           client.terminate();
         } catch (terminateError) {
-          console.error(
-            "WebSocket terminate error:",
-            terminateError.message,
-          );
+          console.error("WebSocket terminate error:", terminateError.message);
         }
       }
     }
@@ -164,22 +169,16 @@ function broadcast(message) {
 // ==========================================
 
 wss.on("connection", (ws, request) => {
-  const authentication =
-    authenticateConnection(request);
+  const authentication = authenticateConnection(request);
 
   // ----------------------------------------
   // REJECT UNAUTHENTICATED
   // ----------------------------------------
 
   if (!authentication) {
-    console.warn(
-      "Rejected unauthenticated WebSocket connection",
-    );
+    console.warn("Rejected unauthenticated WebSocket connection");
 
-    ws.close(
-      1008,
-      "Authentication required",
-    );
+    ws.close(1008, "Authentication required");
 
     return;
   }
@@ -208,8 +207,7 @@ wss.on("connection", (ws, request) => {
 
     console.log(
       `Authenticated user WebSocket connected: ${
-        authentication.user.email ||
-        authentication.user.userId
+        authentication.user.email || authentication.user.userId
       }`,
     );
   }
@@ -219,9 +217,7 @@ wss.on("connection", (ws, request) => {
   // ----------------------------------------
 
   if (authentication.type === "market-data") {
-    console.log(
-      "Authenticated market-data publisher connected.",
-    );
+    console.log("Authenticated market-data publisher connected.");
   }
 
   // ----------------------------------------
@@ -234,8 +230,7 @@ wss.on("connection", (ws, request) => {
       success: true,
       authenticated: true,
       authType: authentication.type,
-      message:
-        "Connected to Currency Broker WebSocket",
+      message: "Connected to Currency Broker WebSocket",
     }),
   );
 
@@ -245,9 +240,7 @@ wss.on("connection", (ws, request) => {
 
   ws.on("message", (message) => {
     try {
-      const data = JSON.parse(
-        message.toString(),
-      );
+      const data = JSON.parse(message.toString());
 
       // --------------------------------------
       // PING
@@ -257,8 +250,7 @@ wss.on("connection", (ws, request) => {
         ws.send(
           JSON.stringify({
             type: "pong",
-            timestamp:
-              new Date().toISOString(),
+            timestamp: new Date().toISOString(),
           }),
         );
 
@@ -270,9 +262,7 @@ wss.on("connection", (ws, request) => {
       // --------------------------------------
 
       if (data.type === "market_price") {
-        if (
-          ws.authType !== "market-data"
-        ) {
+        if (ws.authType !== "market-data") {
           ws.send(
             JSON.stringify({
               type: "error",
@@ -284,15 +274,11 @@ wss.on("connection", (ws, request) => {
           return;
         }
 
-        if (
-          !data.data ||
-          typeof data.data !== "object"
-        ) {
+        if (!data.data || typeof data.data !== "object") {
           ws.send(
             JSON.stringify({
               type: "error",
-              message:
-                "Invalid market price payload.",
+              message: "Invalid market price payload.",
             }),
           );
 
@@ -303,8 +289,7 @@ wss.on("connection", (ws, request) => {
           ws.send(
             JSON.stringify({
               type: "error",
-              message:
-                "Market price symbol is required.",
+              message: "Market price symbol is required.",
             }),
           );
 
@@ -312,18 +297,13 @@ wss.on("connection", (ws, request) => {
         }
 
         if (
-          !Number.isFinite(
-            Number(data.data.bid),
-          ) ||
-          !Number.isFinite(
-            Number(data.data.ask),
-          )
+          !Number.isFinite(Number(data.data.bid)) ||
+          !Number.isFinite(Number(data.data.ask))
         ) {
           ws.send(
             JSON.stringify({
               type: "error",
-              message:
-                "Market price bid and ask must be valid numbers.",
+              message: "Market price bid and ask must be valid numbers.",
             }),
           );
 
@@ -333,32 +313,19 @@ wss.on("connection", (ws, request) => {
         broadcast({
           type: "market_price",
           data: {
-            symbol: String(
-              data.data.symbol,
-            ).toUpperCase(),
+            symbol: String(data.data.symbol).toUpperCase(),
 
-            bid: Number(
-              data.data.bid,
-            ),
+            bid: Number(data.data.bid),
 
-            ask: Number(
-              data.data.ask,
-            ),
+            ask: Number(data.data.ask),
 
-            spread: Number(
-              data.data.spread || 0,
-            ),
+            spread: Number(data.data.spread || 0),
 
-            timestamp:
-              data.data.timestamp ||
-              new Date().toISOString(),
+            timestamp: data.data.timestamp || new Date().toISOString(),
           },
         });
 
-        console.log(
-          "Market price broadcasted:",
-          data.data,
-        );
+        console.log("Market price broadcasted:", data.data);
 
         return;
       }
@@ -370,21 +337,16 @@ wss.on("connection", (ws, request) => {
       ws.send(
         JSON.stringify({
           type: "error",
-          message:
-            "Unsupported WebSocket message type.",
+          message: "Unsupported WebSocket message type.",
         }),
       );
     } catch (error) {
-      console.error(
-        "Invalid WebSocket message:",
-        error.message,
-      );
+      console.error("Invalid WebSocket message:", error.message);
 
       ws.send(
         JSON.stringify({
           type: "error",
-          message:
-            "Invalid WebSocket message.",
+          message: "Invalid WebSocket message.",
         }),
       );
     }
@@ -411,10 +373,7 @@ wss.on("connection", (ws, request) => {
   // ========================================
 
   ws.on("error", (error) => {
-    console.error(
-      "WebSocket client error:",
-      error.message,
-    );
+    console.error("WebSocket client error:", error.message);
   });
 });
 
@@ -425,9 +384,7 @@ wss.on("connection", (ws, request) => {
 const heartbeatTimer = setInterval(() => {
   wss.clients.forEach((ws) => {
     if (ws.isAlive === false) {
-      console.warn(
-        "Terminating stale WebSocket connection.",
-      );
+      console.warn("Terminating stale WebSocket connection.");
 
       ws.terminate();
 
@@ -439,18 +396,12 @@ const heartbeatTimer = setInterval(() => {
     try {
       ws.ping();
     } catch (error) {
-      console.error(
-        "WebSocket heartbeat error:",
-        error.message,
-      );
+      console.error("WebSocket heartbeat error:", error.message);
 
       try {
         ws.terminate();
       } catch (terminateError) {
-        console.error(
-          "WebSocket terminate error:",
-          terminateError.message,
-        );
+        console.error("WebSocket terminate error:", terminateError.message);
       }
     }
   });
@@ -461,20 +412,19 @@ const heartbeatTimer = setInterval(() => {
 // ==========================================
 
 wss.on("error", (error) => {
-  console.error(
-    "WebSocket server error:",
-    error.message,
-  );
+  console.error("WebSocket server error:", error.message);
 });
 
 // ==========================================
 // SERVER LISTEN
 // ==========================================
 
-wss.on("listening", () => {
-  console.log(
-    `Currency Broker WebSocket running on ws://localhost:${PORT}`,
-  );
+httpServer.listen(PORT, "0.0.0.0", () => {
+  console.log(`Currency Broker WebSocket running on port ${PORT}`);
+
+  console.log(`WebSocket: ws://localhost:${PORT}`);
+
+  console.log(`Health: http://localhost:${PORT}/health`);
 });
 
 // ==========================================
@@ -482,61 +432,44 @@ wss.on("listening", () => {
 // ==========================================
 
 async function shutdown(signal) {
-  console.log(
-    `WebSocket server received ${signal}. Shutting down...`,
-  );
+  console.log(`WebSocket server received ${signal}. Shutting down...`);
 
   clearInterval(heartbeatTimer);
 
   wss.clients.forEach((ws) => {
     try {
-      ws.close(
-        1001,
-        "Server shutting down",
-      );
+      ws.close(1001, "Server shutting down");
     } catch (error) {
-      console.error(
-        "WebSocket close error:",
-        error.message,
-      );
+      console.error("WebSocket close error:", error.message);
 
       try {
         ws.terminate();
       } catch (terminateError) {
-        console.error(
-          "WebSocket terminate error:",
-          terminateError.message,
-        );
+        console.error("WebSocket terminate error:", terminateError.message);
       }
     }
   });
 
   wss.close(() => {
+  httpServer.close(() => {
     console.log(
-      "WebSocket server closed.",
+      "WebSocket HTTP server closed.",
     );
 
     process.exit(0);
   });
+});
 
   setTimeout(() => {
-    console.warn(
-      "WebSocket shutdown timeout. Forcing exit.",
-    );
+    console.warn("WebSocket shutdown timeout. Forcing exit.");
 
     process.exit(1);
   }, 5000);
 }
 
-process.on(
-  "SIGINT",
-  () => shutdown("SIGINT"),
-);
+process.on("SIGINT", () => shutdown("SIGINT"));
 
-process.on(
-  "SIGTERM",
-  () => shutdown("SIGTERM"),
-);
+process.on("SIGTERM", () => shutdown("SIGTERM"));
 
 // ==========================================
 // EXPORT
@@ -546,4 +479,3 @@ module.exports = {
   wss,
   broadcast,
 };
-

@@ -12,6 +12,22 @@ const WEBSOCKET_URL =
   process.env.WS_URL ||
   "ws://localhost:5001";
 
+const WEBSOCKET_HEALTH_URL =
+  process.env.WS_HEALTH_URL ||
+  "http://localhost:5001/health";
+
+  const [
+  database,
+  marketData,
+  providerBridge,
+  websocket,
+] = await Promise.all([
+  checkDatabase(),
+  checkHttpService(MARKET_DATA_HEALTH_URL),
+  checkHttpService(PROVIDER_BRIDGE_HEALTH_URL),
+  checkHttpService(WEBSOCKET_HEALTH_URL),
+]);
+
 const HEALTH_TIMEOUT_MS = 3000;
 
 async function checkHttpService(url) {
@@ -145,7 +161,7 @@ async function getSystemHealth() {
     checkHttpService(
       PROVIDER_BRIDGE_HEALTH_URL
     ),
-    checkWebSocket(),
+    checkHttpService(WEBSOCKET_HEALTH_URL)
   ]);
 
   const healthy =
@@ -182,8 +198,8 @@ async function getSystemHealth() {
 
       websocket: {
         status: websocket.healthy
-          ? "connected"
-          : "disconnected",
+          ? "healthy"
+          : "unhealthy",
 
         url: websocket.url,
 
