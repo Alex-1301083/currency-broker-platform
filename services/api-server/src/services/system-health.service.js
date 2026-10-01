@@ -1,5 +1,3 @@
-const WebSocket = require("ws");
-
 const MARKET_DATA_HEALTH_URL =
   process.env.MARKET_DATA_HEALTH_URL ||
   "http://localhost:5002/health";
@@ -8,25 +6,9 @@ const PROVIDER_BRIDGE_HEALTH_URL =
   process.env.PROVIDER_BRIDGE_HEALTH_URL ||
   "http://localhost:5003/health";
 
-const WEBSOCKET_URL =
-  process.env.WS_URL ||
-  "ws://localhost:5001";
-
 const WEBSOCKET_HEALTH_URL =
   process.env.WS_HEALTH_URL ||
   "http://localhost:5001/health";
-
-  const [
-  database,
-  marketData,
-  providerBridge,
-  websocket,
-] = await Promise.all([
-  checkDatabase(),
-  checkHttpService(MARKET_DATA_HEALTH_URL),
-  checkHttpService(PROVIDER_BRIDGE_HEALTH_URL),
-  checkHttpService(WEBSOCKET_HEALTH_URL),
-]);
 
 const HEALTH_TIMEOUT_MS = 3000;
 
@@ -55,6 +37,7 @@ async function checkHttpService(url) {
       healthy:
         response.ok &&
         data?.success === true,
+
       statusCode: response.status,
       data,
     };
@@ -72,79 +55,29 @@ async function checkHttpService(url) {
   }
 }
 
-function checkWebSocket() {
-  return new Promise((resolve) => {
-    let settled = false;
+let checkDatabase = async () => {
+  return {
+    healthy: false,
+    error: "Database health checker is not configured",
+  };
+};
 
-    const finish = (result) => {
-      if (settled) {
-        return;
-      }
-
-      settled = true;
-
-      if (ws) {
-        try {
-          ws.close();
-        } catch {}
-      }
-
-      resolve(result);
-    };
-
-    let ws;
-
+function setDatabaseHealthChecker(databaseHealthChecker) {
+  checkDatabase = async () => {
     try {
-      ws = new WebSocket(WEBSOCKET_URL);
+      const result = await databaseHealthChecker();
+
+      return {
+        healthy: result.connected === true,
+        data: result,
+      };
     } catch (error) {
-      finish({
+      return {
         healthy: false,
-        url: WEBSOCKET_URL,
         error: error.message,
-      });
-
-      return;
+      };
     }
-
-    const timeout = setTimeout(() => {
-      finish({
-        healthy: false,
-        url: WEBSOCKET_URL,
-        error: "WebSocket health check timeout",
-      });
-    }, HEALTH_TIMEOUT_MS);
-
-    ws.once("open", () => {
-      clearTimeout(timeout);
-
-      finish({
-        healthy: true,
-        url: WEBSOCKET_URL,
-      });
-    });
-
-    ws.once("error", (error) => {
-      clearTimeout(timeout);
-
-      finish({
-        healthy: false,
-        url: WEBSOCKET_URL,
-        error: error.message,
-      });
-    });
-
-    ws.once("close", () => {
-      clearTimeout(timeout);
-
-      if (!settled) {
-        finish({
-          healthy: false,
-          url: WEBSOCKET_URL,
-          error: "WebSocket connection closed",
-        });
-      }
-    });
-  });
+  };
 }
 
 async function getSystemHealth() {
@@ -155,13 +88,18 @@ async function getSystemHealth() {
     websocket,
   ] = await Promise.all([
     checkDatabase(),
+
     checkHttpService(
       MARKET_DATA_HEALTH_URL
     ),
+
     checkHttpService(
       PROVIDER_BRIDGE_HEALTH_URL
     ),
-    checkHttpService(WEBSOCKET_HEALTH_URL)
+
+    checkHttpService(
+      WEBSOCKET_HEALTH_URL
+    ),
   ]);
 
   const healthy =
@@ -182,18 +120,36 @@ async function getSystemHealth() {
         status: database.healthy
           ? "connected"
           : "disconnected",
+
+        ...(database.error
+          ? {
+              error: database.error,
+            }
+          : {}),
       },
 
       marketData: {
         status: marketData.healthy
           ? "healthy"
           : "unhealthy",
+
+        ...(marketData.error
+          ? {
+              error: marketData.error,
+            }
+          : {}),
       },
 
       providerBridge: {
         status: providerBridge.healthy
           ? "healthy"
           : "unhealthy",
+
+        ...(providerBridge.error
+          ? {
+              error: providerBridge.error,
+            }
+          : {}),
       },
 
       websocket: {
@@ -201,7 +157,7 @@ async function getSystemHealth() {
           ? "healthy"
           : "unhealthy",
 
-        url: websocket.url,
+        url: WEBSOCKET_HEALTH_URL,
 
         ...(websocket.error
           ? {
@@ -211,32 +167,7 @@ async function getSystemHealth() {
       },
     },
 
-    timestamp:
-      new Date().toISOString(),
-  };
-}
-
-let checkDatabase;
-
-function setDatabaseHealthChecker(
-  databaseHealthChecker
-) {
-  checkDatabase = async () => {
-    try {
-      const result =
-        await databaseHealthChecker();
-
-      return {
-        healthy:
-          result.connected === true,
-        data: result,
-      };
-    } catch (error) {
-      return {
-        healthy: false,
-        error: error.message,
-      };
-    }
+    timestamp: new Date().toISOString(),
   };
 }
 
