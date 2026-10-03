@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import api from "../services/api";
 
 function AuditLogs() {
   const [logs, setLogs] = useState([]);
@@ -10,20 +11,11 @@ function AuditLogs() {
       setLoading(true);
       setError("");
 
-      const token = localStorage.getItem("tradex_admin_token");
+      const response = await api.get("/admin/audit-logs");
 
-      const response = await fetch(
-        "http://localhost:5000/api/admin/audit-logs",
-        {
-          headers: {
-            Authorization: `Bearer ${token}`,
-          },
-        },
-      );
+      const data = response.data;
 
-      const data = await response.json();
-
-      if (!response.ok || !data.success) {
+      if (!data.success) {
         throw new Error(
           data.message || "Unable to load audit logs.",
         );
@@ -32,7 +24,12 @@ function AuditLogs() {
       setLogs(data.data || []);
     } catch (error) {
       console.error("Audit logs error:", error);
-      setError(error.message || "Unable to load audit logs.");
+
+      setError(
+        error.userMessage ||
+          error.message ||
+          "Unable to load audit logs.",
+      );
     } finally {
       setLoading(false);
     }
