@@ -12,10 +12,6 @@ const {
   checkStopLossTakeProfit,
 } = require("./position.service");
 
-const {
-  publishMarketPrice,
-} = require("./websocket.publisher");
-
 const SYMBOL = "XAUUSD";
 
 // Price movement interval
@@ -174,27 +170,7 @@ async function updateDemoPrice() {
       await checkStopLossTakeProfit(
         SYMBOL
       );
-
-    // Send price to WebSocket
-    const published =
-      publishMarketPrice({
-        symbol: SYMBOL,
-        bid: updatedSymbol.bid,
-        ask: updatedSymbol.ask,
-        spread: updatedSymbol.spread,
-      });
-
-    console.log(
-      `[DEMO MARKET] ${SYMBOL} | BID: ${nextBid.toFixed(
-        2
-      )} | ASK: ${nextAsk.toFixed(
-        2
-      )} | WebSocket: ${
-        published
-          ? "SENT"
-          : "NOT CONNECTED"
-      }`
-    );
+    console.log(`[DEMO MARKET] ${SYMBOL} | BID: ${nextBid.toFixed(2)} | ASK: ${nextAsk.toFixed(2)}`);
 
     if (
       positionResult?.updatedPositions

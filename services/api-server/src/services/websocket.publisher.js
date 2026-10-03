@@ -12,22 +12,36 @@ const WS_URL =
 const MARKET_DATA_WS_SECRET =
   process.env.MARKET_DATA_WS_SECRET;
 
-if (!MARKET_DATA_WS_SECRET) {
+const PROVIDER_MODE =
+  String(process.env.PROVIDER_MODE || "demo")
+    .trim()
+    .toLowerCase() === "provider";
+
+let socket = null;
+let reconnectTimer = null;
+
+if (PROVIDER_MODE) {
+  console.log(
+    "[API WS] Provider mode detected. API market-price publisher is DISABLED."
+  );
+  console.log(
+    "[API WS] Market Data service is the authoritative price publisher."
+  );
+} else if (!MARKET_DATA_WS_SECRET) {
   console.warn(
     "MARKET_DATA_WS_SECRET is not configured. API WebSocket publisher will not connect."
   );
 }
 
-let socket = null;
-let reconnectTimer = null;
-
 function connectWebSocket() {
+  if (PROVIDER_MODE) {
+    return;
+  }
+
   if (
     socket &&
-    (
-      socket.readyState === WebSocket.OPEN ||
-      socket.readyState === WebSocket.CONNECTING
-    )
+    (socket.readyState === WebSocket.OPEN ||
+      socket.readyState === WebSocket.CONNECTING)
   ) {
     return;
   }
@@ -36,7 +50,6 @@ function connectWebSocket() {
     console.warn(
       "API WebSocket publisher cannot connect because MARKET_DATA_WS_SECRET is missing."
     );
-
     return;
   }
 
@@ -45,14 +58,8 @@ function connectWebSocket() {
     WS_URL
   );
 
-  /*
-   * The WebSocket server expects:
-   *
-   * market-data.<SECRET>
-   *
-   * as the WebSocket subprotocol.
-   */
-  const protocol = `market-data.${MARKET_DATA_WS_SECRET}`;
+  const protocol =
+    `market-data.${MARKET_DATA_WS_SECRET}`;
 
   socket = new WebSocket(
     WS_URL,
@@ -64,39 +71,32 @@ function connectWebSocket() {
       "API WebSocket publisher connected to:",
       WS_URL
     );
-
-    if (reconnectTimer) {
-      clearTimeout(reconnectTimer);
-      reconnectTimer = null;
-    }
   });
 
-  socket.on("message", (message) => {
+  socket.on("message", (data) => {
     try {
-      const data = JSON.parse(
-        message.toString()
-      );
-
       console.log(
         "API WebSocket publisher received:",
-        data
+        JSON.parse(data.toString())
       );
-    } catch (error) {
-      console.error(
+    } catch {
+      console.warn(
         "API WebSocket publisher received invalid message:",
-        error.message
+        data.toString()
       );
     }
   });
 
   socket.on("close", (code, reason) => {
-    console.log(
+    console.warn(
       `API WebSocket publisher disconnected. code=${code} reason=${reason.toString()}`
     );
 
     socket = null;
 
-    scheduleReconnect();
+    if (!PROVIDER_MODE) {
+      scheduleReconnect();
+    }
   });
 
   socket.on("error", (error) => {
@@ -108,41 +108,54 @@ function connectWebSocket() {
 }
 
 function scheduleReconnect() {
+  if (PROVIDER_MODE) {
+    return;
+  }
+
   if (reconnectTimer) {
     return;
   }
 
   reconnectTimer = setTimeout(() => {
     reconnectTimer = null;
-
     connectWebSocket();
   }, 3000);
 }
 
 function publish(message) {
+  if (PROVIDER_MODE) {
+    return false;
+  }
+
   if (
     !socket ||
     socket.readyState !== WebSocket.OPEN
   ) {
-    console.warn(
-      "WebSocket is not connected. Message was not published."
+    connectWebSocket();
+    return false;
+  }
+
+  try {
+    socket.send(
+      JSON.stringify(message)
+    );
+
+    return true;
+  } catch (error) {
+    console.error(
+      "API WebSocket publish error:",
+      error.message
     );
 
     return false;
   }
-
-  socket.send(
-    JSON.stringify(message)
-  );
-
-  return true;
 }
 
 function publishMarketPrice({
   symbol,
   bid,
   ask,
-  spread
+  spread,
 }) {
   return publish({
     type: "market_price",
@@ -151,15 +164,17 @@ function publishMarketPrice({
       bid: Number(bid),
       ask: Number(ask),
       spread: Number(spread),
-      timestamp: new Date().toISOString()
-    }
+      timestamp: new Date().toISOString(),
+    },
   });
 }
 
-connectWebSocket();
+if (!PROVIDER_MODE) {
+  connectWebSocket();
+}
 
 module.exports = {
   connectWebSocket,
   publish,
-  publishMarketPrice
+  publishMarketPrice,
 };

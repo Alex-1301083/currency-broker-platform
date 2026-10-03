@@ -14,7 +14,6 @@ const { getOpenPositionsBySymbol } = require("../models/position.model");
 
 const { findAccountsBySymbol } = require("../models/account.model");
 
-const { publishMarketPrice } = require("../services/websocket.publisher");
 
 
 async function getSymbols(req, res) {
@@ -254,14 +253,7 @@ async function updatePrice(req, res) {
     const positionUpdate = await updateOpenPositionsForSymbol(symbol);
 
     const stopTakeResult = await checkStopLossTakeProfit(symbol);
-
-    publishMarketPrice({
-      symbol: updatedSymbol.symbol,
-      bid: updatedSymbol.bid,
-      ask: updatedSymbol.ask,
-      spread: updatedSymbol.spread,
-    });
-    // 4. Fetch FINAL open positions
+// 4. Fetch FINAL open positions
     //    after SL / TP processing
     const finalPositions = await getOpenPositionsBySymbol(symbol);
 
