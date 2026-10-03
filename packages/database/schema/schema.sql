@@ -408,3 +408,40 @@ CREATE INDEX IF NOT EXISTS idx_audit_logs_user_id
 -- ============================================
 
 SELECT 'Database schema created successfully' AS message;
+-- ============================================
+-- IDEMPOTENCY KEYS
+-- ============================================
+
+CREATE TABLE IF NOT EXISTS idempotency_keys (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+
+    account_id UUID NOT NULL
+        REFERENCES accounts(id) ON DELETE CASCADE,
+
+    idempotency_key VARCHAR(255) NOT NULL,
+
+    request_hash VARCHAR(64) NOT NULL,
+
+    status VARCHAR(30) NOT NULL DEFAULT 'processing',
+
+    response_status INTEGER,
+
+    response_body JSONB,
+
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT idempotency_keys_status_check
+        CHECK (status IN ('processing', 'completed')),
+
+    CONSTRAINT idempotency_keys_account_key_unique
+        UNIQUE (account_id, idempotency_key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_idempotency_keys_account_id
+    ON idempotency_keys(account_id);
+
+CREATE INDEX IF NOT EXISTS idx_idempotency_keys_created_at
+    ON idempotency_keys(created_at);
+
