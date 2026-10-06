@@ -1,4 +1,4 @@
-const { pool } = require("../config/database");
+﻿const { pool } = require("../config/database");
 
 /*
 |--------------------------------------------------------------------------
@@ -81,7 +81,7 @@ function persistActiveCandle(candle) {
  * Example:
  *
  * 10:25:43
- *       ↓
+ *       â†“
  * 10:25:00
  */
 function getMinuteStart(date = new Date()) {
@@ -721,13 +721,37 @@ async function getHistoricalCandles({ symbol, timeframe = "1m", limit = 200 }) {
 
   const normalizedSymbol = symbol.toUpperCase();
 
-  const [providerCandles, storedCandles] = await Promise.all([
-    fetchProviderCandles(normalizedSymbol, timeframe, safeLimit),
-    getStoredCandles(normalizedSymbol, timeframe, safeLimit).catch((error) => {
-      console.error("[CANDLE] stored candles failed:", error.message);
-      return [];
-    }),
-  ]);
+  const storedCandles = await getStoredCandles(
+    normalizedSymbol,
+    timeframe,
+    safeLimit,
+  ).catch((error) => {
+    console.error("[CANDLE] stored candles failed:", error.message);
+    return [];
+  });
+
+  /*
+   * Provider mode:
+   * Provider Bridge is the authoritative market-price source.
+   * Do NOT mix Twelve Data historical candles with Provider Bridge
+   * prices because the two feeds can have different price levels.
+   */
+  if (process.env.PROVIDER_MODE === "provider") {
+    return removeOutliers(
+      storedCandles,
+      timeframe,
+    ).slice(-safeLimit);
+  }
+
+  /*
+   * Non-provider mode:
+   * Keep the existing Twelve Data + database merge behavior.
+   */
+  const providerCandles = await fetchProviderCandles(
+    normalizedSymbol,
+    timeframe,
+    safeLimit,
+  );
 
   const merged = removeOutliers(
     mergeCandles(providerCandles, storedCandles, timeframe),

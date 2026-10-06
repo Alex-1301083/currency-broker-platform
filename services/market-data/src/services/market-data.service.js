@@ -4,6 +4,9 @@ const {
   updateOpenPositionsForSymbol,
   checkStopLossTakeProfit,
 } = require("../../../api-server/src/services/position.service");
+const {
+  processPriceTick,
+} = require("../../../api-server/src/services/candle.service");
 
 const WebSocket = require("ws");
 const path = require("path");
@@ -12,12 +15,9 @@ require("dotenv").config({
   path: path.resolve(__dirname, "../../../../.env"),
 });
 
-const WS_URL =
-  process.env.MARKET_DATA_WS_URL ||
-  "ws://localhost:5001";
+const WS_URL = process.env.MARKET_DATA_WS_URL || "ws://localhost:5001";
 
-const MARKET_DATA_WS_SECRET =
-  process.env.MARKET_DATA_WS_SECRET;
+const MARKET_DATA_WS_SECRET = process.env.MARKET_DATA_WS_SECRET;
 
 if (!MARKET_DATA_WS_SECRET) {
   throw new Error(
@@ -34,27 +34,18 @@ let reconnectTimer = null;
 function connectWebSocket() {
   if (
     socket &&
-    (
-      socket.readyState === WebSocket.OPEN ||
-      socket.readyState === WebSocket.CONNECTING
-    )
+    (socket.readyState === WebSocket.OPEN ||
+      socket.readyState === WebSocket.CONNECTING)
   ) {
     return;
   }
 
-  console.log(
-    `[MARKET DATA] Connecting to WebSocket: ${WS_URL}`,
-  );
+  console.log(`[MARKET DATA] Connecting to WebSocket: ${WS_URL}`);
 
-  socket = new WebSocket(
-    WS_URL,
-    `market-data.${MARKET_DATA_WS_SECRET}`,
-  );
+  socket = new WebSocket(WS_URL, `market-data.${MARKET_DATA_WS_SECRET}`);
 
   socket.on("open", () => {
-    console.log(
-      "[MARKET DATA] Authenticated WebSocket publisher connected.",
-    );
+    console.log("[MARKET DATA] Authenticated WebSocket publisher connected.");
 
     if (reconnectTimer) {
       clearTimeout(reconnectTimer);
@@ -64,14 +55,9 @@ function connectWebSocket() {
 
   socket.on("message", (message) => {
     try {
-      const data = JSON.parse(
-        message.toString(),
-      );
+      const data = JSON.parse(message.toString());
 
-      console.log(
-        "[MARKET DATA] WebSocket server message:",
-        data,
-      );
+      console.log("[MARKET DATA] WebSocket server message:", data);
     } catch (error) {
       console.error(
         "[MARKET DATA] Invalid WebSocket server message:",
@@ -81,10 +67,7 @@ function connectWebSocket() {
   });
 
   socket.on("error", (error) => {
-    console.error(
-      "[MARKET DATA] WebSocket publisher error:",
-      error.message,
-    );
+    console.error("[MARKET DATA] WebSocket publisher error:", error.message);
   });
 
   socket.on("close", (code, reason) => {
@@ -116,13 +99,8 @@ function scheduleReconnect() {
  * Publish market price through WebSocket
  */
 function publishMarketPrice(price) {
-  if (
-    !socket ||
-    socket.readyState !== WebSocket.OPEN
-  ) {
-    console.warn(
-      "[MARKET DATA] WebSocket not connected. Price not published.",
-    );
+  if (!socket || socket.readyState !== WebSocket.OPEN) {
+    console.warn("[MARKET DATA] WebSocket not connected. Price not published.");
 
     return;
   }
@@ -140,10 +118,7 @@ function publishMarketPrice(price) {
 
   socket.send(JSON.stringify(message));
 
-  console.log(
-    "[MARKET DATA] Published market price:",
-    message,
-  );
+  console.log("[MARKET DATA] Published market price:", message);
 }
 
 connectWebSocket();
@@ -167,38 +142,23 @@ connectWebSocket();
  *       ↓
  * WebSocket
  */
-async function updateMarketPrice({
-  symbol,
-  bid,
-  ask,
-  spread,
-  timestamp,
-}) {
+async function updateMarketPrice({ symbol, bid, ask, spread, timestamp }) {
   if (!symbol) {
-    throw new Error(
-      "Market price symbol is required.",
-    );
+    throw new Error("Market price symbol is required.");
   }
 
-  if (
-    !Number.isFinite(Number(bid)) ||
-    !Number.isFinite(Number(ask))
-  ) {
-    throw new Error(
-      `Invalid market price for ${symbol}.`,
-    );
+  if (!Number.isFinite(Number(bid)) || !Number.isFinite(Number(ask))) {
+    throw new Error(`Invalid market price for ${symbol}.`);
   }
 
-  const normalizedSymbol =
-    String(symbol).toUpperCase();
+  const normalizedSymbol = String(symbol).toUpperCase();
 
   const normalizedBid = Number(bid);
   const normalizedAsk = Number(ask);
 
-  const normalizedSpread =
-    Number.isFinite(Number(spread))
-      ? Number(spread)
-      : normalizedAsk - normalizedBid;
+  const normalizedSpread = Number.isFinite(Number(spread))
+    ? Number(spread)
+    : normalizedAsk - normalizedBid;
 
   /**
    * 1. Update symbol market price
@@ -221,35 +181,47 @@ async function updateMarketPrice({
       spread,
       updated_at
     `,
-    [
-      normalizedBid,
-      normalizedAsk,
-      normalizedSpread,
-      normalizedSymbol,
-    ],
+    [normalizedBid, normalizedAsk, normalizedSpread, normalizedSymbol],
   );
-
+  /*
+   * Provider mode:
+   * Provider Bridge is the authoritative price source.
+   * Convert every live market tick into a 1-minute candle.
+   */
   if (result.rows.length === 0) {
-    throw new Error(
-      `Active symbol not found: ${normalizedSymbol}`,
-    );
+    throw new Error(`Active symbol not found: ${normalizedSymbol}`);
   }
 
   const updatedSymbol = result.rows[0];
+
+  /*
+   * Provider mode:
+   * Provider Bridge is the authoritative market-price source.
+   * Convert every live market tick into a 1-minute candle.
+   */
+  if (process.env.PROVIDER_MODE === "provider") {
+    try {
+      await processPriceTick({
+        symbolId: updatedSymbol.id,
+        symbol: normalizedSymbol,
+        bid: normalizedBid,
+        volume: 1,
+        timestamp: timestamp ? new Date(timestamp) : new Date(),
+      });
+    } catch (error) {
+      console.error("[MARKET DATA] Candle processing failed:", error.message);
+    }
+  }
 
   const marketPrice = {
     symbol: updatedSymbol.symbol,
     bid: Number(updatedSymbol.bid),
     ask: Number(updatedSymbol.ask),
     spread: Number(updatedSymbol.spread),
-    timestamp:
-      timestamp || new Date().toISOString(),
+    timestamp: timestamp || new Date().toISOString(),
   };
 
-  console.log(
-    "[MARKET DATA] Price updated:",
-    marketPrice,
-  );
+  console.log("[MARKET DATA] Price updated:", marketPrice);
 
   /**
    * 2. Update all open positions
@@ -261,20 +233,11 @@ async function updateMarketPrice({
    * - account free margin
    */
   try {
-    const positionResult =
-      await updateOpenPositionsForSymbol(
-        normalizedSymbol,
-      );
+    const positionResult = await updateOpenPositionsForSymbol(normalizedSymbol);
 
-    console.log(
-      "[MARKET DATA] Open positions updated:",
-      positionResult,
-    );
+    console.log("[MARKET DATA] Open positions updated:", positionResult);
   } catch (error) {
-    console.error(
-      "[MARKET DATA] Position update failed:",
-      error.message,
-    );
+    console.error("[MARKET DATA] Position update failed:", error.message);
 
     throw error;
   }
@@ -283,22 +246,13 @@ async function updateMarketPrice({
    * 3. Check Stop Loss / Take Profit
    */
   try {
-    const stopTakeResult =
-      await checkStopLossTakeProfit(
-        normalizedSymbol,
-      );
+    const stopTakeResult = await checkStopLossTakeProfit(normalizedSymbol);
 
     if (stopTakeResult) {
-      console.log(
-        "[MARKET DATA] SL/TP check completed:",
-        stopTakeResult,
-      );
+      console.log("[MARKET DATA] SL/TP check completed:", stopTakeResult);
     }
   } catch (error) {
-    console.error(
-      "[MARKET DATA] SL/TP check failed:",
-      error.message,
-    );
+    console.error("[MARKET DATA] SL/TP check failed:", error.message);
 
     throw error;
   }
