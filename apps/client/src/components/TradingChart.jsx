@@ -522,7 +522,6 @@ export default function TradingChart({
         });
 
         lastCandleRef.current = next;
-        lastTickAtRef.current = Date.now();
       } catch (error) {
         console.error("[TradeX Chart] Candle update failed:", error);
       }
@@ -630,10 +629,14 @@ export default function TradingChart({
   /* ---------------- LIVE BID -> candle + volume ---------------- */
 
   useEffect(() => {
-    if (!currentBid || currentBid <= 0) return;
+    if (!Number.isFinite(currentBid) || currentBid <= 0) return;
 
     if (currentBid !== lastBidRef.current) {
       lastBidRef.current = currentBid;
+
+      // Track the time of the incoming market-price update,
+      // independently of whether the chart candle can update.
+      lastTickAtRef.current = Date.now();
 
       console.log("[TradeX Chart] New bid received:", {
         symbol,
