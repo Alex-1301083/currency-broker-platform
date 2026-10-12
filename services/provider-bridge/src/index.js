@@ -1,4 +1,6 @@
-require("dotenv").config({ path: require("path").resolve(__dirname, "../../../.env") });
+require("dotenv").config({
+  path: require("path").resolve(__dirname, "../../../.env"),
+});
 const http = require("http");
 
 const providerManager = require("./services/provider-manager");
@@ -11,7 +13,9 @@ const {
 
 const PRICE_INTERVAL = 1000;
 
-const PROVIDER_BRIDGE_PORT = Number(process.env.PROVIDER_BRIDGE_PORT || process.env.PORT || 5003);
+const PROVIDER_BRIDGE_PORT = Number(
+  process.env.PROVIDER_BRIDGE_PORT || process.env.PORT || 5003,
+);
 const PROVIDER_RECONNECT_INTERVAL = 5000;
 const PROVIDER_HEALTH_INTERVAL = 5000;
 
@@ -102,20 +106,15 @@ function requireInternalAuth(req, res) {
 // ==========================================
 
 async function sendPriceToMarketData(price) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15000);
+
   try {
-    const controller = new AbortController();
-
-    const timeout = setTimeout(() => {
-      controller.abort();
-    }, 5000);
-
     const response = await fetch(MARKET_DATA_URL, {
       method: "POST",
-
       headers: {
         "Content-Type": "application/json",
       },
-
       body: JSON.stringify({
         symbol: price.symbol,
         bid: price.bid,
@@ -123,44 +122,43 @@ async function sendPriceToMarketData(price) {
         spread: price.spread,
         timestamp: price.timestamp || new Date().toISOString(),
       }),
-
       signal: controller.signal,
     });
 
-    clearTimeout(timeout);
-
-    const text = await response.text();
-
+    const responseText = await response.text();
     let result;
 
     try {
-      result = text ? JSON.parse(text) : {};
+      result = responseText ? JSON.parse(responseText) : {};
     } catch {
-      result = {
-        message: text || "Invalid response from Market Data",
-      };
+      result = { message: responseText };
     }
 
     if (!response.ok) {
-      throw new Error(result.message || `Market Data HTTP ${response.status}`);
+      throw new Error(
+        `Market Data returned HTTP ${response.status}: ${
+          result.message || responseText || "Unknown error"
+        }`,
+      );
     }
 
-    console.log("[PROVIDER → MARKET DATA]", result.data);
-
+    console.log("[PROVIDER → MARKET DATA]", result);
     return result;
   } catch (error) {
     console.error(
       `[MARKET DATA PUSH ERROR] ${price.symbol}`,
       error.name === "AbortError"
-        ? "Request timed out after 5 seconds"
+        ? "Request timed out after 15 seconds"
         : error.message,
     );
 
     console.error("[MARKET DATA URL]", MARKET_DATA_URL);
-
     return null;
+  } finally {
+    clearTimeout(timeout);
   }
 }
+
 // ==========================================
 // PROVIDER BRIDGE HTTP SERVER
 // ==========================================
@@ -478,6 +476,3 @@ async function startProviderBridge() {
   }
 }
 startProviderBridge();
-
-
-
