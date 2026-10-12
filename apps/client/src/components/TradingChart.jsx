@@ -146,9 +146,17 @@ function formatVolume(value) {
 */
 function cleanCandles(rawCandles) {
   const byTime = new Map();
+  const nowSeconds = Math.floor(Date.now() / 1000);
 
-  for (const candle of rawCandles) {
-    const time = Math.floor(new Date(candle.openTime).getTime() / 1000);
+  for (const candle of rawCandles || []) {
+    const parsedTime = new Date(candle.openTime).getTime();
+
+    if (!Number.isFinite(parsedTime)) continue;
+
+    const time = Math.floor(parsedTime / 1000);
+
+    // Reject invalid or future-dated candles.
+    if (time <= 0 || time > nowSeconds + 60) continue;
 
     const open = toNumber(candle.open);
     const high = toNumber(candle.high);
@@ -156,8 +164,9 @@ function cleanCandles(rawCandles) {
     const close = toNumber(candle.close);
 
     if (
-      !Number.isFinite(time) ||
-      [open, high, low, close].some((value) => value === null || value <= 0)
+      [open, high, low, close].some(
+        (value) => value === null || value <= 0
+      )
     ) {
       continue;
     }
@@ -172,7 +181,7 @@ function cleanCandles(rawCandles) {
     });
   }
 
-  return Array.from(byTime.values()).sort((a, b) => a.time - b.time);
+  return [...byTime.values()].sort((a, b) => a.time - b.time);
 }
 
 function volumeColor(candle) {
@@ -440,43 +449,56 @@ export default function TradingChart({
   /* ---------------- ONE LIVE TICK -> CURRENT CANDLE ---------------- */
 
   const applyTick = useCallback(
-    (price) => {
-      const candles = candleSeriesRef.current;
-      const volumeSeries = volumeSeriesRef.current;
+  (price) => {
+    const candles = candleSeriesRef.current;
+    const volumeSeries = volumeSeriesRef.current;
 
-      if (!candles || !readyRef.current || !price || price <= 0 || !frame) {
-        return;
-      }
+    if (
+      !candles ||
+      !readyRef.current ||
+      !Number.isFinite(price) ||
+      price <= 0 ||
+      !frame
+    ) {
+      return;
+    }
 
-      const bucket = bucketStartSeconds(Date.now(), frame.ms);
-      const previous = lastCandleRef.current;
+    const bucket = bucketStartSeconds(Date.now(), frame.ms);
+    const previous = lastCandleRef.current;
 
-      let next;
+    // Never update a candle with an older timestamp.
+    if (previous && bucket < previous.time) {
+      console.warn("[TradeX Chart] Ignoring out-of-order tick", {
+        bucket,
+        previousTime: previous.time,
+      });
+      return;
+    }
 
-      if (!previous || bucket > previous.time) {
-        /* a new candle opens at the previous close: no visual gaps */
-        const open = previous ? previous.close : price;
+    let next;
 
-        next = {
-          time: bucket,
-          open,
-          high: Math.max(open, price),
-          low: Math.min(open, price),
-          close: price,
-          volume: 1,
-        };
-      } else {
-        next = {
-          ...previous,
-          high: Math.max(previous.high, price),
-          low: Math.min(previous.low, price),
-          close: price,
-          volume: (previous.volume || 0) + 1,
-        };
-      }
+    if (!previous || bucket > previous.time) {
+      const open = previous ? previous.close : price;
 
-      lastCandleRef.current = next;
+      next = {
+        time: bucket,
+        open,
+        high: Math.max(open, price),
+        low: Math.min(open, price),
+        close: price,
+        volume: 1,
+      };
+    } else {
+      next = {
+        ...previous,
+        high: Math.max(previous.high, price),
+        low: Math.min(previous.low, price),
+        close: price,
+        volume: (previous.volume || 0) + 1,
+      };
+    }
 
+    try {
       candles.update({
         time: next.time,
         open: next.open,
@@ -491,10 +513,14 @@ export default function TradingChart({
         color: volumeColor(next),
       });
 
+      lastCandleRef.current = next;
       lastTickAtRef.current = Date.now();
-    },
-    [frame],
-  );
+    } catch (error) {
+      console.error("[TradeX Chart] Candle update failed:", error);
+    }
+  },
+  [frame],
+);
 
   /* ---------------- LOAD HISTORY ---------------- */
 
