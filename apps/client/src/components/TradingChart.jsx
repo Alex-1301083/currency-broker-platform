@@ -92,8 +92,18 @@ function bucketStartSeconds(timeMs, frameMs) {
 const pad = (value) => String(value).padStart(2, "0");
 
 const MONTHS = [
-  "Jan", "Feb", "Mar", "Apr", "May", "Jun",
-  "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+  "Jan",
+  "Feb",
+  "Mar",
+  "Apr",
+  "May",
+  "Jun",
+  "Jul",
+  "Aug",
+  "Sep",
+  "Oct",
+  "Nov",
+  "Dec",
 ];
 
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -164,9 +174,7 @@ function cleanCandles(rawCandles) {
     const close = toNumber(candle.close);
 
     if (
-      [open, high, low, close].some(
-        (value) => value === null || value <= 0
-      )
+      [open, high, low, close].some((value) => value === null || value <= 0)
     ) {
       continue;
     }
@@ -449,78 +457,78 @@ export default function TradingChart({
   /* ---------------- ONE LIVE TICK -> CURRENT CANDLE ---------------- */
 
   const applyTick = useCallback(
-  (price) => {
-    const candles = candleSeriesRef.current;
-    const volumeSeries = volumeSeriesRef.current;
+    (price) => {
+      const candles = candleSeriesRef.current;
+      const volumeSeries = volumeSeriesRef.current;
 
-    if (
-      !candles ||
-      !readyRef.current ||
-      !Number.isFinite(price) ||
-      price <= 0 ||
-      !frame
-    ) {
-      return;
-    }
+      if (
+        !candles ||
+        !readyRef.current ||
+        !Number.isFinite(price) ||
+        price <= 0 ||
+        !frame
+      ) {
+        return;
+      }
 
-    const bucket = bucketStartSeconds(Date.now(), frame.ms);
-    const previous = lastCandleRef.current;
+      const bucket = bucketStartSeconds(Date.now(), frame.ms);
+      const previous = lastCandleRef.current;
 
-    // Never update a candle with an older timestamp.
-    if (previous && bucket < previous.time) {
-      console.warn("[TradeX Chart] Ignoring out-of-order tick", {
-        bucket,
-        previousTime: previous.time,
-      });
-      return;
-    }
+      // Never update a candle with an older timestamp.
+      if (previous && bucket < previous.time) {
+        console.warn("[TradeX Chart] Ignoring out-of-order tick", {
+          bucket,
+          previousTime: previous.time,
+        });
+        return;
+      }
 
-    let next;
+      let next;
 
-    if (!previous || bucket > previous.time) {
-      const open = previous ? previous.close : price;
+      if (!previous || bucket > previous.time) {
+        const open = previous ? previous.close : price;
 
-      next = {
-        time: bucket,
-        open,
-        high: Math.max(open, price),
-        low: Math.min(open, price),
-        close: price,
-        volume: 1,
-      };
-    } else {
-      next = {
-        ...previous,
-        high: Math.max(previous.high, price),
-        low: Math.min(previous.low, price),
-        close: price,
-        volume: (previous.volume || 0) + 1,
-      };
-    }
+        next = {
+          time: bucket,
+          open,
+          high: Math.max(open, price),
+          low: Math.min(open, price),
+          close: price,
+          volume: 1,
+        };
+      } else {
+        next = {
+          ...previous,
+          high: Math.max(previous.high, price),
+          low: Math.min(previous.low, price),
+          close: price,
+          volume: (previous.volume || 0) + 1,
+        };
+      }
 
-    try {
-      candles.update({
-        time: next.time,
-        open: next.open,
-        high: next.high,
-        low: next.low,
-        close: next.close,
-      });
+      try {
+        candles.update({
+          time: next.time,
+          open: next.open,
+          high: next.high,
+          low: next.low,
+          close: next.close,
+        });
 
-      volumeSeries?.update({
-        time: next.time,
-        value: next.volume,
-        color: volumeColor(next),
-      });
+        volumeSeries?.update({
+          time: next.time,
+          value: next.volume,
+          color: volumeColor(next),
+        });
 
-      lastCandleRef.current = next;
-      lastTickAtRef.current = Date.now();
-    } catch (error) {
-      console.error("[TradeX Chart] Candle update failed:", error);
-    }
-  },
-  [frame],
-);
+        lastCandleRef.current = next;
+        lastTickAtRef.current = Date.now();
+      } catch (error) {
+        console.error("[TradeX Chart] Candle update failed:", error);
+      }
+    },
+    [frame],
+  );
 
   /* ---------------- LOAD HISTORY ---------------- */
 
@@ -572,7 +580,9 @@ export default function TradingChart({
           })),
         );
 
-        lastCandleRef.current = data.length ? { ...data[data.length - 1] } : null;
+        lastCandleRef.current = data.length
+          ? { ...data[data.length - 1] }
+          : null;
         readyRef.current = true;
 
         if (data.length) {
@@ -601,7 +611,8 @@ export default function TradingChart({
           readyRef.current = true;
 
           setError(
-            loadError.userMessage || "Unable to load market data for the chart.",
+            loadError.userMessage ||
+              "Unable to load market data for the chart.",
           );
         }
       } finally {
@@ -623,9 +634,17 @@ export default function TradingChart({
 
     if (currentBid !== lastBidRef.current) {
       lastBidRef.current = currentBid;
+
+      console.log("[TradeX Chart] New bid received:", {
+        symbol,
+        bid: currentBid,
+        ready: readyRef.current,
+        time: new Date().toISOString(),
+      });
+
       applyTick(currentBid);
     }
-  }, [currentBid, applyTick]);
+  }, [currentBid, applyTick, symbol]);
 
   /* keep the OHLC legend and LIVE badge in sync (throttled) */
   useEffect(() => {
@@ -941,7 +960,11 @@ export default function TradingChart({
             +
           </button>
 
-          <button type="button" title="Go to latest candle" onClick={goToLatest}>
+          <button
+            type="button"
+            title="Go to latest candle"
+            onClick={goToLatest}
+          >
             ⏭
           </button>
 
@@ -963,7 +986,8 @@ export default function TradingChart({
         <div className="tvc-overlay">
           <div className="tvc-legend">
             <span className="tvc-name">
-              {SYMBOL_NAMES[symbol] || symbol} · {timeframe.toUpperCase()} · TRADEX
+              {SYMBOL_NAMES[symbol] || symbol} · {timeframe.toUpperCase()} ·
+              TRADEX
             </span>
 
             {shown && (

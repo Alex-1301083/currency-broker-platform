@@ -1,176 +1,176 @@
+
 const WS_URL =
   import.meta.env.VITE_WS_URL ||
   "ws://localhost:5001";
 
 let socket = null;
 let reconnectTimer = null;
-
 let manuallyDisconnected = false;
 
-const listeners =
-  new Set();
+const listeners = new Set();
 
 function getToken() {
-  return localStorage.getItem(
-    "tradex_token",
-  );
+  return localStorage.getItem("tradex_token");
 }
 
 export function connectWebSocket() {
-  const token =
-    getToken();
+  const token = getToken();
 
   if (!token) {
     console.warn(
-      "[TradeX WS] No JWT token. WebSocket not connected.",
+      "[TradeX WS] No JWT token. WebSocket not connected."
     );
-
     return null;
   }
 
   manuallyDisconnected = false;
 
+  // Reuse an existing connection.
   if (
     socket &&
     (
-      socket.readyState ===
-        WebSocket.OPEN ||
-      socket.readyState ===
-        WebSocket.CONNECTING
+      socket.readyState === WebSocket.OPEN ||
+      socket.readyState === WebSocket.CONNECTING
     )
   ) {
     return socket;
   }
 
-  console.log(
-    "[TradeX WS] Connecting:",
-    WS_URL,
-  );
+  console.log("[TradeX WS] Connecting:", WS_URL);
 
-  /*
-   * WebSocket server expects:
-   *
-   * bearer.<JWT>
-   */
+  let ws;
 
-  socket = new WebSocket(
-    WS_URL,
-    `bearer.${token}`,
-  );
+  try {
+    ws = new WebSocket(WS_URL, `bearer.${token}`);
+    socket = ws;
+  } catch (error) {
+    console.error("[TradeX WS] Connection creation failed:", error);
+    scheduleReconnect();
+    return null;
+  }
 
-  socket.onopen = () => {
-    console.log(
-      "[TradeX WS] Connected.",
-    );
+  ws.onopen = () => {
+    console.log("[TradeX WS] Connected.");
 
     if (reconnectTimer) {
-      clearTimeout(
-        reconnectTimer,
-      );
-
+      clearTimeout(reconnectTimer);
       reconnectTimer = null;
     }
   };
 
-  socket.onmessage = (
-    event,
-  ) => {
+  ws.onmessage = (event) => {
+    let message;
+
     try {
-      const message =
-        JSON.parse(
-          event.data,
-        );
-
-      listeners.forEach(
-        (listener) => {
-          try {
-            listener(message);
-          } catch (error) {
-            console.error(
-              "[TradeX WS] Listener error:",
-              error,
-            );
-          }
-        },
-      );
+      message = JSON.parse(event.data);
     } catch (error) {
-      console.error(
-        "[TradeX WS] Invalid message:",
-        error,
-      );
+      console.error("[TradeX WS] Invalid JSON message:", error);
+      console.error("[TradeX WS] Raw message:", event.data);
+      return;
     }
+
+    // Temporary diagnostic logs: inspect actual server message types.
+    console.log("[TradeX WS] Message received:", message);
+
+    const messageType =
+      message?.type ??
+      message?.event ??
+      message?.channel ??
+      message?.topic;
+
+    if (
+      messageType === "market_price" ||
+      messageType === "price"
+    ) {
+      console.log("[TradeX WS] PRICE MESSAGE:", message);
+    }
+
+    listeners.forEach((listener) => {
+      try {
+        listener(message);
+      } catch (error) {
+        console.error("[TradeX WS] Listener error:", error);
+      }
+    });
   };
 
-  socket.onerror = (
-    error,
-  ) => {
-    console.error(
-      "[TradeX WS] Error:",
-      error,
-    );
+  ws.onerror = (error) => {
+    console.error("[TradeX WS] Connection error:", error);
   };
 
-  socket.onclose = (
-    event,
-  ) => {
+  ws.onclose = (event) => {
     console.warn(
       "[TradeX WS] Closed:",
       event.code,
-      event.reason,
+      event.reason || "(no reason provided)"
     );
 
-    socket = null;
+    // Don't let an old connection clear a newer connection.
+    if (socket === ws) {
+      socket = null;
+    }
 
     if (!manuallyDisconnected) {
       scheduleReconnect();
     }
   };
 
-  return socket;
+  return ws;
 }
 
 function scheduleReconnect() {
-  if (reconnectTimer) {
+  if (manuallyDisconnected || reconnectTimer) {
     return;
   }
 
-  reconnectTimer =
-    setTimeout(() => {
-      reconnectTimer = null;
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
 
+    if (!manuallyDisconnected) {
       connectWebSocket();
-    }, 3000);
+    }
+  }, 3000);
 }
 
-export function subscribeWebSocket(
-  listener,
-) {
-  listeners.add(
-    listener,
+export function subscribeWebSocket(listener) {
+  if (typeof listener !== "function") {
+    throw new TypeError(
+      "subscribeWebSocket expects a function."
+    );
+  }
+
+  listeners.add(listener);
+
+  console.log(
+    "[TradeX WS] Listener subscribed. Total:",
+    listeners.size
   );
 
   return () => {
-    listeners.delete(
-      listener,
+    listeners.delete(listener);
+
+    console.log(
+      "[TradeX WS] Listener unsubscribed. Total:",
+      listeners.size
     );
   };
 }
 
 export function disconnectWebSocket() {
-  manuallyDisconnected =
-    true;
+  manuallyDisconnected = true;
 
   if (reconnectTimer) {
-    clearTimeout(
-      reconnectTimer,
-    );
-
+    clearTimeout(reconnectTimer);
     reconnectTimer = null;
   }
 
-  if (socket) {
-    socket.close();
+  const ws = socket;
+  socket = null;
 
-    socket = null;
+  if (ws) {
+    // Prevent the intentional close from triggering reconnect.
+    ws.close(1000, "Client disconnected");
   }
+
+  console.log("[TradeX WS] Disconnected manually.");
 }
