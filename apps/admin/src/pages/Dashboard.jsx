@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+
+import { useCallback, useEffect, useState } from "react";
 import {
   Users,
   UserCheck,
@@ -7,236 +8,280 @@ import {
   Activity,
   BarChart3,
   RefreshCw,
-  LogOut,
+  ShieldCheck,
+  ArrowUpRight,
+  CircleAlert,
 } from "lucide-react";
-import { useNavigate } from "react-router-dom";
 import api from "../services/api";
 import AdminLayout from "../components/AdminLayout";
 
 function Dashboard() {
-  const navigate = useNavigate();
-
   const [user, setUser] = useState(null);
   const [stats, setStats] = useState(null);
-
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [lastUpdated, setLastUpdated] = useState(null);
 
-  useEffect(() => {
-    const savedUser = localStorage.getItem(
-      "tradex_admin_user"
-    );
-
-    if (savedUser) {
-      try {
-        setUser(JSON.parse(savedUser));
-      } catch {
-        localStorage.removeItem(
-          "tradex_admin_user"
-        );
-      }
-    }
-
-    loadDashboard();
-  }, []);
-
-  const loadDashboard = async () => {
+  const loadDashboard = useCallback(async () => {
     try {
       setLoading(true);
       setError("");
 
-      const response = await api.get(
-        "/admin/dashboard"
-      );
+      const response = await api.get("/admin/dashboard");
+      const data = response.data?.data;
 
-      setStats(response.data?.data || null);
-    } catch (error) {
-      console.error(
-        "Dashboard loading error:",
-        error
-      );
+      if (!data || typeof data !== "object") {
+        throw new Error("Dashboard data was not returned by the API.");
+      }
+
+      setStats(data);
+      setLastUpdated(new Date());
+    } catch (err) {
+      console.error("Dashboard loading error:", err);
 
       setError(
-        error.userMessage ||
-          error.response?.data?.message ||
-          "Unable to load dashboard."
+        err.userMessage ||
+          err.response?.data?.message ||
+          err.message ||
+          "Unable to load dashboard data."
       );
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
 
-  const logout = () => {
-    localStorage.removeItem(
-      "tradex_admin_token"
-    );
+  useEffect(() => {
+    try {
+      const savedUser = localStorage.getItem("tradex_admin_user");
+      if (savedUser) setUser(JSON.parse(savedUser));
+    } catch {
+      localStorage.removeItem("tradex_admin_user");
+    }
 
-    localStorage.removeItem(
-      "tradex_admin_user"
-    );
-
-    navigate("/login");
-  };
+    loadDashboard();
+  }, [loadDashboard]);
 
   const cards = [
     {
       label: "Total Users",
-      value: stats?.totalUsers ?? 0,
+      value: stats?.totalUsers,
       icon: Users,
+      color: "blue",
     },
     {
       label: "Active Users",
-      value: stats?.activeUsers ?? 0,
+      value: stats?.activeUsers,
       icon: UserCheck,
+      color: "green",
     },
     {
       label: "Trading Accounts",
-      value: stats?.totalAccounts ?? 0,
+      value: stats?.totalAccounts,
       icon: Wallet,
+      color: "purple",
     },
     {
       label: "Total Orders",
-      value: stats?.totalOrders ?? 0,
+      value: stats?.totalOrders,
       icon: ClipboardList,
+      color: "orange",
     },
     {
       label: "Open Positions",
-      value: stats?.openPositions ?? 0,
+      value: stats?.openPositions,
       icon: Activity,
+      color: "cyan",
     },
     {
       label: "Total Trades",
-      value: stats?.totalTrades ?? 0,
+      value: stats?.totalTrades,
       icon: BarChart3,
+      color: "pink",
     },
     {
       label: "Active Symbols",
-      value: stats?.activeSymbols ?? 0,
-      icon: Activity,
+      value: stats?.activeSymbols,
+      icon: ArrowUpRight,
+      color: "yellow",
     },
   ];
 
+  const adminName =
+    user?.full_name || user?.name || user?.email?.split("@")[0] || "Admin";
+
+  const formatValue = (value) => {
+    if (value === undefined || value === null) return "—";
+
+    const number = Number(value);
+    return Number.isFinite(number)
+      ? number.toLocaleString("en-IN")
+      : String(value);
+  };
+
   return (
     <AdminLayout title="Dashboard">
-      <div className="admin-page">
-
-      {/* TOP BAR */}
-
-      {/* MAIN */}
-      <main className="admin-dashboard">
-
-        {/* HEADER */}
-        <div className="admin-page-heading">
-
+      <div className="tx-dashboard">
+        <section className="tx-dashboard-heading">
           <div>
-            <span className="eyebrow">
-              OVERVIEW
-            </span>
+            <div className="tx-eyebrow">
+              <span className="tx-eyebrow-dot" />
+              ADMINISTRATION / OVERVIEW
+            </div>
 
-            <h1>
-              Dashboard
-            </h1>
+            <h2>Welcome back, {adminName}</h2>
 
             <p>
-              Monitor the TradeX trading
-              platform.
+              Here's what's happening across your TradeX platform.
             </p>
           </div>
 
           <button
-            className="refresh-button"
+            type="button"
+            className="tx-refresh-button"
             onClick={loadDashboard}
             disabled={loading}
           >
             <RefreshCw
               size={16}
-              className={
-                loading
-                  ? "spin"
-                  : ""
-              }
+              className={loading ? "spin" : ""}
             />
-
-            {loading
-              ? "Loading..."
-              : "Refresh"}
+            {loading ? "Refreshing..." : "Refresh data"}
           </button>
+        </section>
 
-        </div>
-
-        {/* ERROR */}
         {error && (
-          <div className="admin-error">
-            {error}
+          <div className="tx-dashboard-error" role="alert">
+            <CircleAlert size={19} />
+            <div>
+              <strong>Dashboard data unavailable</strong>
+              <p>{error}</p>
+            </div>
+            <button type="button" onClick={loadDashboard}>
+              Retry
+            </button>
           </div>
         )}
 
-        {/* STAT CARDS */}
-        <section className="admin-stat-grid">
+        <section className="tx-dashboard-banner">
+          <div className="tx-banner-icon">
+            <ShieldCheck size={25} />
+          </div>
 
+          <div className="tx-banner-copy">
+            <span>TRADEX CONTROL CENTER</span>
+            <strong>Platform overview</strong>
+            <p>
+              Review account activity and trading operations from one place.
+            </p>
+          </div>
+
+          <div
+            className={`tx-api-indicator ${
+              error ? "is-error" : stats ? "is-connected" : ""
+            }`}
+          >
+            <span />
+            {error
+              ? "DATA UNAVAILABLE"
+              : stats
+                ? "DASHBOARD DATA LOADED"
+                : loading
+                  ? "CHECKING DATA"
+                  : "STATUS UNKNOWN"}
+          </div>
+        </section>
+
+        <section className="tx-section-heading">
+          <div>
+            <span className="tx-eyebrow">KEY METRICS</span>
+            <h3>Platform statistics</h3>
+          </div>
+
+          <span className="tx-updated-time">
+            {lastUpdated
+              ? `Updated ${lastUpdated.toLocaleTimeString()}`
+              : "Waiting for data"}
+          </span>
+        </section>
+
+        <section className="tx-stat-grid">
           {cards.map((card) => {
-
             const Icon = card.icon;
 
             return (
-              <div
-                className="admin-stat-card"
-                key={card.label}
-              >
-
-                <div className="admin-stat-icon">
-                  <Icon size={20} />
+              <article className="tx-stat-card" key={card.label}>
+                <div className={`tx-stat-icon ${card.color}`}>
+                  <Icon size={21} strokeWidth={1.8} />
                 </div>
 
-                <div className="admin-stat-content">
-
-                  <span>
-                    {card.label}
-                  </span>
-
+                <div className="tx-stat-details">
+                  <span>{card.label}</span>
                   <strong>
-                    {loading
-                      ? "—"
-                      : card.value}
+                    {loading && !stats ? "..." : formatValue(card.value)}
                   </strong>
-
+                  <small>
+                    {stats ? "From admin API" : "Awaiting API data"}
+                  </small>
                 </div>
 
-              </div>
+                <div className="tx-stat-corner">
+                  <ArrowUpRight size={17} />
+                </div>
+              </article>
             );
           })}
-
         </section>
 
-        {/* PLATFORM STATUS */}
-        <section className="platform-status">
+        <section className="tx-dashboard-bottom">
+          <div className="tx-info-card">
+            <div className="tx-info-card-heading">
+              <div className="tx-small-icon">
+                <Activity size={18} />
+              </div>
+              <div>
+                <h3>System overview</h3>
+                <p>Dashboard request status</p>
+              </div>
+            </div>
 
-          <div>
-            <span className="status-dot"></span>
-
-            <div>
-              <strong>
-                Trading Platform
+            <div className="tx-system-row">
+              <span>Admin API response</span>
+              <strong className={stats ? "tx-text-green" : "tx-text-muted"}>
+                {stats ? "Received" : loading ? "Checking..." : "Unavailable"}
               </strong>
+            </div>
 
-              <p>
-                API and database services
-                are connected.
-              </p>
+            <div className="tx-system-row">
+              <span>Statistics</span>
+              <strong>{stats ? "Loaded" : "Not loaded"}</strong>
+            </div>
+
+            <div className="tx-system-row">
+              <span>Last successful refresh</span>
+              <strong>
+                {lastUpdated ? lastUpdated.toLocaleTimeString() : "—"}
+              </strong>
             </div>
           </div>
 
-          <span className="status-online">
-            ONLINE
-          </span>
+          <div className="tx-info-card tx-security-card">
+            <div className="tx-security-symbol">
+              <ShieldCheck size={24} />
+            </div>
 
+            <div>
+              <span className="tx-eyebrow">ADMIN ACCESS</span>
+              <h3>Manage with care</h3>
+              <p>
+                Review user status, orders, positions and audit records using
+                the navigation menu. Verify important changes before applying
+                them.
+              </p>
+            </div>
+          </div>
         </section>
-
-      </main>
-
-    </div>
+      </div>
     </AdminLayout>
-    
   );
 }
 
