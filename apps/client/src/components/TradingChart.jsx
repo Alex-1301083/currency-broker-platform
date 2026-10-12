@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 
 import {
   createChart,
@@ -11,28 +18,14 @@ import {
 
 import api from "../services/api";
 
-/*
-=========================================================
-TRADEX LIVE CHART  (TradingView style)
-
-- Candles + tick volume
-- BID line (last price) and ASK line, updated live
-- SELL / BUY quote box with spread (like TradingView)
-- Open positions: ENTRY, STOP LOSS and TAKE PROFIT lines
-  with live P/L, plus BUY / SELL arrows on the candle
-- Shows a normal number of candles (no more "squeezed" chart)
-- Time axis in the user's LOCAL time zone
-=========================================================
-*/
-
 const TIMEFRAMES = [
   { label: "1m", value: "1m", ms: 60_000 },
-  { label: "5m", value: "5m", ms: 5 * 60_000 },
-  { label: "15m", value: "15m", ms: 15 * 60_000 },
-  { label: "30m", value: "30m", ms: 30 * 60_000 },
-  { label: "1H", value: "1h", ms: 60 * 60_000 },
-  { label: "4H", value: "4h", ms: 4 * 60 * 60_000 },
-  { label: "1D", value: "1d", ms: 24 * 60 * 60_000 },
+  { label: "5m", value: "5m", ms: 300_000 },
+  { label: "15m", value: "15m", ms: 900_000 },
+  { label: "30m", value: "30m", ms: 1_800_000 },
+  { label: "1H", value: "1h", ms: 3_600_000 },
+  { label: "4H", value: "4h", ms: 14_400_000 },
+  { label: "1D", value: "1d", ms: 86_400_000 },
 ];
 
 const SYMBOL_NAMES = {
@@ -64,117 +57,72 @@ const THEMES = {
 const UP = "#089981";
 const DOWN = "#f23645";
 const BUY_BLUE = "#2962ff";
-const ASK_COLOR = "#2962ff";
-
-/* Number of candles shown when the chart opens (TradingView-like). */
-const VISIBLE_BARS = 110;
 const BAR_SPACING = 9;
+const VISIBLE_BARS = 110;
 
 function getDigits(symbol) {
-  const name = String(symbol || "").toUpperCase();
+  const s = String(symbol || "").toUpperCase();
 
-  if (name === "XAUUSD" || name === "BTCUSD") return 2;
-  if (name.endsWith("JPY")) return 3;
+  if (s === "XAUUSD" || s === "BTCUSD") return 2;
+  if (s.endsWith("JPY")) return 3;
 
   return 5;
 }
 
 function toNumber(value) {
-  const number = Number(value);
-
-  return Number.isFinite(number) ? number : null;
-}
-
-function bucketStartSeconds(timeMs, frameMs) {
-  return Math.floor((Math.floor(timeMs / frameMs) * frameMs) / 1000);
-}
-
-const pad = (value) => String(value).padStart(2, "0");
-
-const MONTHS = [
-  "Jan",
-  "Feb",
-  "Mar",
-  "Apr",
-  "May",
-  "Jun",
-  "Jul",
-  "Aug",
-  "Sep",
-  "Oct",
-  "Nov",
-  "Dec",
-];
-
-const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-
-/* Chart time is UTC seconds; show it in the browser's local time. */
-function formatCrosshairTime(seconds) {
-  const date = new Date(seconds * 1000);
-
-  const day = `${WEEKDAYS[date.getDay()]} ${pad(date.getDate())} ${
-    MONTHS[date.getMonth()]
-  } '${String(date.getFullYear()).slice(2)}`;
-
-  return `${day}  ${pad(date.getHours())}:${pad(date.getMinutes())}`;
-}
-
-function formatTick(seconds, tickType) {
-  const date = new Date(seconds * 1000);
-
-  switch (tickType) {
-    case 0:
-      return String(date.getFullYear());
-    case 1:
-      return MONTHS[date.getMonth()];
-    case 2:
-      return String(date.getDate());
-    default:
-      return `${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  if (value === null || value === undefined || value === "") {
+    return null;
   }
+
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
 }
 
-function money(value) {
-  const number = Number(value) || 0;
-
-  return `${number >= 0 ? "+" : "-"}$${Math.abs(number).toFixed(2)}`;
+function bucketStartSeconds(timestamp, interval) {
+  return Math.floor(timestamp / interval) * Math.floor(interval / 1000);
 }
 
-function formatVolume(value) {
-  const number = Number(value) || 0;
-
-  if (number >= 1_000_000) return `${(number / 1_000_000).toFixed(2)}M`;
-  if (number >= 1_000) return `${(number / 1_000).toFixed(2)}K`;
-
-  return String(Math.round(number));
+function volumeColor(candle) {
+  return candle.close >= candle.open
+    ? "rgba(8,153,129,0.45)"
+    : "rgba(242,54,69,0.45)";
 }
 
-/*
- One bad candle (old demo data, a provider glitch) stretches the
- price axis and "squeezes" all real candles. Sort, de-duplicate
- and drop candles that are impossible.
-*/
-function cleanCandles(rawCandles) {
+function cleanCandles(raw) {
   const byTime = new Map();
-  const nowSeconds = Math.floor(Date.now() / 1000);
+  const now = Math.floor(Date.now() / 1000);
 
-  for (const candle of rawCandles || []) {
-    const parsedTime = new Date(candle.openTime).getTime();
+  for (const item of raw || []) {
+    const rawTime =
+      item.openTime ??
+      item.open_time ??
+      item.timestamp ??
+      item.time;
 
-    if (!Number.isFinite(parsedTime)) continue;
+    let milliseconds;
 
-    const time = Math.floor(parsedTime / 1000);
+    if (typeof rawTime === "number") {
+      milliseconds =
+        rawTime < 10_000_000_000 ? rawTime * 1000 : rawTime;
+    } else {
+      milliseconds = new Date(rawTime).getTime();
+    }
 
-    // Reject invalid or future-dated candles.
-    if (time <= 0 || time > nowSeconds + 60) continue;
+    if (!Number.isFinite(milliseconds)) continue;
 
-    const open = toNumber(candle.open);
-    const high = toNumber(candle.high);
-    const low = toNumber(candle.low);
-    const close = toNumber(candle.close);
+    const time = Math.floor(milliseconds / 1000);
+
+    if (time <= 0 || time > now + 60) continue;
+
+    const open = toNumber(item.open);
+    const high = toNumber(item.high);
+    const low = toNumber(item.low);
+    const close = toNumber(item.close);
 
     if (
-      [open, high, low, close].some((value) => value === null || value <= 0)
+      [open, high, low, close].some(
+        (v) => v === null || v <= 0,
+      )
     ) {
       continue;
     }
@@ -182,20 +130,56 @@ function cleanCandles(rawCandles) {
     byTime.set(time, {
       time,
       open,
-      high: Math.max(high, open, close),
-      low: Math.min(low, open, close),
+      high: Math.max(open, high, close),
+      low: Math.min(open, low, close),
       close,
-      volume: toNumber(candle.volume) || 0,
+      volume: Math.max(0, toNumber(item.volume) || 0),
     });
   }
 
   return [...byTime.values()].sort((a, b) => a.time - b.time);
 }
 
-function volumeColor(candle) {
-  return candle.close >= candle.open
-    ? "rgba(8,153,129,0.45)"
-    : "rgba(242,54,69,0.45)";
+function money(value) {
+  const n = Number(value) || 0;
+  return `${n >= 0 ? "+" : "-"}$${Math.abs(n).toFixed(2)}`;
+}
+
+function formatVolume(value) {
+  const n = Number(value) || 0;
+
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(2)}K`;
+
+  return String(Math.round(n));
+}
+
+function formatTime(seconds) {
+  return new Date(seconds * 1000).toLocaleString(undefined, {
+    weekday: "short",
+    day: "2-digit",
+    month: "short",
+    year: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+}
+
+function formatTick(time, tickType) {
+  const d = new Date(time * 1000);
+
+  if (tickType === 0) return String(d.getFullYear());
+  if (tickType === 1) {
+    return d.toLocaleString(undefined, { month: "short" });
+  }
+  if (tickType === 2) return String(d.getDate());
+
+  return d.toLocaleTimeString(undefined, {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
 }
 
 export default function TradingChart({
@@ -207,21 +191,20 @@ export default function TradingChart({
   onBuy,
 }) {
   const containerRef = useRef(null);
-
   const chartRef = useRef(null);
   const candleSeriesRef = useRef(null);
   const volumeSeriesRef = useRef(null);
   const markersRef = useRef(null);
 
   const lastCandleRef = useRef(null);
-  const readyRef = useRef(false);
-  const lastBidRef = useRef(0);
+  const lastBidRef = useRef(null);
   const bidRef = useRef(0);
-
-  const askLineRef = useRef(null);
-  const positionLinesRef = useRef(new Map());
+  const readyRef = useRef(false);
 
   const lastTickAtRef = useRef(0);
+  const historyRequestRef = useRef(0);
+  const askLineRef = useRef(null);
+  const positionLinesRef = useRef(new Map());
   const hiddenAtRef = useRef(0);
 
   const [timeframe, setTimeframe] = useState("5m");
@@ -236,92 +219,76 @@ export default function TradingChart({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [reloadKey, setReloadKey] = useState(0);
-
   const [lastCandle, setLastCandle] = useState(null);
   const [hoverCandle, setHoverCandle] = useState(null);
   const [live, setLive] = useState(false);
 
   const digits = getDigits(symbol);
-  const frame = TIMEFRAMES.find((item) => item.value === timeframe);
+  const frame = TIMEFRAMES.find((x) => x.value === timeframe);
   const palette = THEMES[theme];
 
   const currentBid = toNumber(bid);
   const currentAsk = toNumber(ask);
 
-  /* latest bid for callbacks (declared before the effects that read it) */
   useEffect(() => {
     bidRef.current = currentBid || 0;
   }, [currentBid]);
 
-  /* ---------------- CREATE CHART (once) ---------------- */
-
+  // Create the chart once.
   useEffect(() => {
     const container = containerRef.current;
-
     if (!container) return undefined;
 
-    const start = THEMES[theme];
+    const initial = THEMES.dark;
 
     const chart = createChart(container, {
       autoSize: true,
-
       layout: {
-        background: { color: start.background },
-        textColor: start.text,
+        background: { color: initial.background },
+        textColor: initial.text,
         fontSize: 12,
-        fontFamily:
-          "-apple-system, BlinkMacSystemFont, 'Trebuchet MS', Roboto, Ubuntu, sans-serif",
         attributionLogo: false,
       },
-
       grid: {
-        vertLines: { color: start.grid },
-        horzLines: { color: start.grid },
+        vertLines: { color: initial.grid },
+        horzLines: { color: initial.grid },
       },
-
       rightPriceScale: {
-        borderColor: start.border,
+        borderColor: initial.border,
         scaleMargins: { top: 0.14, bottom: 0.2 },
         minimumWidth: 96,
       },
-
       timeScale: {
-        borderColor: start.border,
+        borderColor: initial.border,
         timeVisible: true,
         secondsVisible: false,
         barSpacing: BAR_SPACING,
         minBarSpacing: 2,
         rightOffset: 10,
-        tickMarkFormatter: (time, tickType) => formatTick(time, tickType),
+        tickMarkFormatter: formatTick,
       },
-
       localization: {
-        timeFormatter: (time) => formatCrosshairTime(time),
+        timeFormatter: formatTime,
       },
-
       crosshair: {
         mode: CrosshairMode.Normal,
         vertLine: {
-          color: start.crosshair,
-          width: 1,
+          color: initial.crosshair,
           style: LineStyle.Dashed,
-          labelBackgroundColor: start.labelBg,
+          labelBackgroundColor: initial.labelBg,
         },
         horzLine: {
-          color: start.crosshair,
-          width: 1,
+          color: initial.crosshair,
           style: LineStyle.Dashed,
-          labelBackgroundColor: start.labelBg,
+          labelBackgroundColor: initial.labelBg,
         },
       },
-
       handleScroll: {
         mouseWheel: true,
         pressedMouseMove: true,
         horzTouchDrag: true,
         vertTouchDrag: false,
       },
-
       handleScale: {
         mouseWheel: true,
         pinch: true,
@@ -339,7 +306,6 @@ export default function TradingChart({
       wickDownColor: DOWN,
       priceLineVisible: true,
       priceLineStyle: LineStyle.Dotted,
-      priceLineWidth: 1,
       lastValueVisible: true,
     });
 
@@ -362,7 +328,7 @@ export default function TradingChart({
         return;
       }
 
-      const volumePoint = param.seriesData.get(volume);
+      const volumePoint = param.seriesData?.get(volume);
 
       setHoverCandle({
         open: point.open,
@@ -378,17 +344,24 @@ export default function TradingChart({
     volumeSeriesRef.current = volume;
     markersRef.current = createSeriesMarkers(candles, []);
 
-    const lines = positionLinesRef.current;
-
     return () => {
-      lines.clear();
-      askLineRef.current = null;
+      for (const line of positionLinesRef.current.values()) {
+        try {
+          candles.removePriceLine(line);
+        } catch {}
+      }
+
+      positionLinesRef.current.clear();
+
+      if (askLineRef.current) {
+        try {
+          candles.removePriceLine(askLineRef.current);
+        } catch {}
+      }
 
       try {
         chart.remove();
-      } catch {
-        /* already removed */
-      }
+      } catch {}
 
       chartRef.current = null;
       candleSeriesRef.current = null;
@@ -397,15 +370,11 @@ export default function TradingChart({
       lastCandleRef.current = null;
       readyRef.current = false;
     };
-    // The chart is created once; theme changes are handled below.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  /* ---------------- THEME ---------------- */
-
+  // Theme changes.
   useEffect(() => {
     const chart = chartRef.current;
-
     if (!chart) return;
 
     chart.applyOptions({
@@ -433,19 +402,12 @@ export default function TradingChart({
 
     try {
       localStorage.setItem("tradex_chart_theme", theme);
-    } catch {
-      /* storage not available */
-    }
+    } catch {}
   }, [theme, palette]);
 
-  /* ---------------- PRICE FORMAT (per symbol) ---------------- */
-
+  // Price precision.
   useEffect(() => {
-    const series = candleSeriesRef.current;
-
-    if (!series) return;
-
-    series.applyOptions({
+    candleSeriesRef.current?.applyOptions({
       priceFormat: {
         type: "price",
         precision: digits,
@@ -454,19 +416,18 @@ export default function TradingChart({
     });
   }, [digits, symbol]);
 
-  /* ---------------- ONE LIVE TICK -> CURRENT CANDLE ---------------- */
-
+  // Update the active candle with the latest incoming BID.
   const applyTick = useCallback(
     (price) => {
       const candles = candleSeriesRef.current;
-      const volumeSeries = volumeSeriesRef.current;
+      const volume = volumeSeriesRef.current;
 
       if (
         !candles ||
         !readyRef.current ||
+        !frame ||
         !Number.isFinite(price) ||
-        price <= 0 ||
-        !frame
+        price <= 0
       ) {
         return;
       }
@@ -474,19 +435,12 @@ export default function TradingChart({
       const bucket = bucketStartSeconds(Date.now(), frame.ms);
       const previous = lastCandleRef.current;
 
-      // Never update a candle with an older timestamp.
-      if (previous && bucket < previous.time) {
-        console.warn("[TradeX Chart] Ignoring out-of-order tick", {
-          bucket,
-          previousTime: previous.time,
-        });
-        return;
-      }
+      if (previous && bucket < previous.time) return;
 
       let next;
 
       if (!previous || bucket > previous.time) {
-        const open = previous ? previous.close : price;
+        const open = previous?.close ?? price;
 
         next = {
           time: bucket,
@@ -515,51 +469,69 @@ export default function TradingChart({
           close: next.close,
         });
 
-        volumeSeries?.update({
+        volume?.update({
           time: next.time,
           value: next.volume,
           color: volumeColor(next),
         });
 
         lastCandleRef.current = next;
-      } catch (error) {
-        console.error("[TradeX Chart] Candle update failed:", error);
+        lastTickAtRef.current = Date.now();
+      } catch (e) {
+        console.error("[TradeX Chart] Candle update failed:", e);
       }
     },
     [frame],
   );
 
-  /* ---------------- LOAD HISTORY ---------------- */
-
+  // Load candle history whenever symbol/timeframe changes.
   useEffect(() => {
     const candles = candleSeriesRef.current;
-    const volumeSeries = volumeSeriesRef.current;
+    const volume = volumeSeriesRef.current;
     const chart = chartRef.current;
 
-    if (!symbol || !candles || !volumeSeries || !chart) return undefined;
+    if (!symbol || !candles || !volume || !chart) return undefined;
 
     let cancelled = false;
+    const requestId = ++historyRequestRef.current;
 
     readyRef.current = false;
     lastCandleRef.current = null;
+    setLastCandle(null);
+    setHoverCandle(null);
+    setError("");
+
     candles.setData([]);
-    volumeSeries.setData([]);
+    volume.setData([]);
 
-    async function load() {
+    async function loadHistory() {
+      setLoading(true);
+
       try {
-        setLoading(true);
-        setError("");
-        setLastCandle(null);
-        setHoverCandle(null);
+        const response = await api.get(
+          `/market/candles/${encodeURIComponent(symbol)}`,
+          {
+            params: { timeframe, limit: 400 },
+            timeout: 20000,
+          },
+        );
 
-        const response = await api.get(`/market/candles/${symbol}`, {
-          params: { timeframe, limit: 400 },
-          timeout: 20000,
-        });
+        if (
+          cancelled ||
+          requestId !== historyRequestRef.current
+        ) {
+          return;
+        }
 
-        if (cancelled) return;
+        const raw = response.data?.data?.candles;
 
-        const data = cleanCandles(response.data?.data?.candles || []);
+        if (!Array.isArray(raw)) {
+          throw new Error(
+            "Unexpected candle API response. Expected data.candles array.",
+          );
+        }
+
+        const data = cleanCandles(raw);
 
         candles.setData(
           data.map(({ time, open, high, low, close }) => ({
@@ -571,7 +543,7 @@ export default function TradingChart({
           })),
         );
 
-        volumeSeries.setData(
+        volume.setData(
           data.map((candle) => ({
             time: candle.time,
             value: candle.volume,
@@ -582,36 +554,49 @@ export default function TradingChart({
         lastCandleRef.current = data.length
           ? { ...data[data.length - 1] }
           : null;
+
         readyRef.current = true;
 
         if (data.length) {
-          /* Show a sensible number of candles instead of squeezing all */
           const lastIndex = data.length - 1;
 
-          chart.timeScale().applyOptions({ barSpacing: BAR_SPACING });
+          chart.timeScale().applyOptions({
+            barSpacing: BAR_SPACING,
+          });
+
           chart.timeScale().setVisibleLogicalRange({
-            from: Math.max(lastIndex - VISIBLE_BARS, -2),
+            from: Math.max(lastIndex - VISIBLE_BARS, 0),
             to: lastIndex + 10,
           });
 
-          chart.priceScale("right").applyOptions({ autoScale: true });
+          chart.priceScale("right").applyOptions({
+            autoScale: true,
+          });
         } else {
-          setError("No chart data yet. Waiting for live prices...");
+          setError("No candle history returned. Waiting for market data.");
         }
 
-        /* apply the newest live price immediately */
-        if (bidRef.current > 0) {
-          applyTick(bidRef.current);
-        }
-      } catch (loadError) {
-        console.error("Chart candle error:", loadError);
+        // Apply the latest available price after history is ready.
+        const latestBid = bidRef.current;
 
+        if (latestBid > 0) {
+          applyTick(latestBid);
+        }
+
+        console.info("[TradeX Chart] History loaded", {
+          symbol,
+          timeframe,
+          candles: data.length,
+        });
+      } catch (e) {
         if (!cancelled) {
-          readyRef.current = true;
+          console.error("[TradeX Chart] History load failed:", e);
 
+          readyRef.current = false;
           setError(
-            loadError.userMessage ||
-              "Unable to load market data for the chart.",
+            e?.userMessage ||
+              e?.message ||
+              "Unable to load chart history. Please retry.",
           );
         }
       } finally {
@@ -619,65 +604,69 @@ export default function TradingChart({
       }
     }
 
-    load();
+    loadHistory();
 
     return () => {
       cancelled = true;
     };
   }, [symbol, timeframe, reloadKey, applyTick]);
 
-  /* ---------------- LIVE BID -> candle + volume ---------------- */
-
+  // Consume incoming BID updates.
   useEffect(() => {
-    if (!Number.isFinite(currentBid) || currentBid <= 0) return;
-
-    if (currentBid !== lastBidRef.current) {
-      lastBidRef.current = currentBid;
-
-      // Track the time of the incoming market-price update,
-      // independently of whether the chart candle can update.
-      lastTickAtRef.current = Date.now();
-
-      console.log("[TradeX Chart] New bid received:", {
-        symbol,
-        bid: currentBid,
-        ready: readyRef.current,
-        time: new Date().toISOString(),
-      });
-
-      applyTick(currentBid);
+    if (
+      currentBid === null ||
+      currentBid <= 0 ||
+      currentBid === lastBidRef.current
+    ) {
+      return;
     }
+
+    lastBidRef.current = currentBid;
+    lastTickAtRef.current = Date.now();
+
+    console.info("[TradeX Chart] BID update", {
+      symbol,
+      bid: currentBid,
+      chartReady: readyRef.current,
+    });
+
+    applyTick(currentBid);
   }, [currentBid, applyTick, symbol]);
 
-  /* keep the OHLC legend and LIVE badge in sync (throttled) */
+  // Keep OHLC and LIVE status refreshed.
   useEffect(() => {
     const timer = setInterval(() => {
       const candle = lastCandleRef.current;
 
       if (candle) {
-        setLastCandle((previous) =>
-          previous &&
-          previous.time === candle.time &&
-          previous.close === candle.close &&
-          previous.high === candle.high &&
-          previous.low === candle.low &&
-          previous.volume === candle.volume
-            ? previous
-            : { ...candle },
-        );
+        setLastCandle((previous) => {
+          if (
+            previous &&
+            previous.time === candle.time &&
+            previous.close === candle.close &&
+            previous.high === candle.high &&
+            previous.low === candle.low &&
+            previous.volume === candle.volume
+          ) {
+            return previous;
+          }
+
+          return { ...candle };
+        });
       }
 
-      setLive(Date.now() - lastTickAtRef.current < 15000);
-    }, 400);
+      setLive(
+        lastTickAtRef.current > 0 &&
+          Date.now() - lastTickAtRef.current < 15000,
+      );
+    }, 500);
 
     return () => clearInterval(timer);
   }, []);
 
-  /* ---------------- ASK LINE (updated in place) ---------------- */
-
+  // ASK price line.
   useEffect(() => {
     const series = candleSeriesRef.current;
-
     if (!series) return;
 
     if (!currentAsk || currentAsk <= 0) {
@@ -685,17 +674,16 @@ export default function TradingChart({
         series.removePriceLine(askLineRef.current);
         askLineRef.current = null;
       }
-
       return;
     }
 
     const options = {
       price: currentAsk,
-      color: ASK_COLOR,
+      color: BUY_BLUE,
       lineWidth: 1,
       lineStyle: LineStyle.Dotted,
       axisLabelVisible: true,
-      axisLabelColor: ASK_COLOR,
+      axisLabelColor: BUY_BLUE,
       axisLabelTextColor: "#ffffff",
       title: "ASK",
     };
@@ -707,27 +695,25 @@ export default function TradingChart({
     }
   }, [currentAsk]);
 
-  /* ---------------- OPEN POSITIONS: ENTRY / SL / TP ---------------- */
-
+  // Open-position entry, SL and TP lines.
   const openPositions = useMemo(() => {
-    const current = String(symbol).toUpperCase();
+    const selectedSymbol = String(symbol).toUpperCase();
 
-    return positions.filter(
-      (position) =>
-        String(position.symbol || "").toUpperCase() === current &&
-        String(position.status || "").toLowerCase() === "open",
+    return (positions || []).filter(
+      (p) =>
+        String(p.symbol || "").toUpperCase() === selectedSymbol &&
+        String(p.status || "").toLowerCase() === "open",
     );
   }, [positions, symbol]);
 
   useEffect(() => {
     const series = candleSeriesRef.current;
-
     if (!series) return;
 
-    const lines = positionLinesRef.current;
+    const existingLines = positionLinesRef.current;
     const wanted = new Map();
 
-    openPositions.forEach((position) => {
+    for (const position of openPositions) {
       const id = String(position.id);
       const side = String(position.side || "").toUpperCase();
       const volume = toNumber(position.volume) || 0;
@@ -735,11 +721,14 @@ export default function TradingChart({
       const contractSize = toNumber(position.contract_size) || 1;
       const direction = side === "BUY" ? 1 : -1;
 
-      if (entry === null || entry <= 0) return;
+      if (!entry || entry <= 0) continue;
 
-      const livePnl =
-        currentBid && currentAsk
-          ? ((side === "BUY" ? currentBid : currentAsk) - entry) *
+      const exitPrice =
+        side === "BUY" ? currentBid : currentAsk;
+
+      const pnl =
+        exitPrice > 0
+          ? (exitPrice - entry) *
             direction *
             volume *
             contractSize
@@ -755,102 +744,88 @@ export default function TradingChart({
         axisLabelVisible: true,
         axisLabelColor: sideColor,
         axisLabelTextColor: "#ffffff",
-        title: `${side} ${volume.toFixed(2)}  ${money(livePnl)}`,
+        title: `${side} ${volume.toFixed(2)} ${money(pnl)}`,
       });
 
-      const stopLoss = toNumber(position.stop_loss);
-
-      if (stopLoss && stopLoss > 0) {
-        const slPnl = (stopLoss - entry) * direction * volume * contractSize;
-
+      const sl = toNumber(position.stop_loss);
+      if (sl && sl > 0) {
         wanted.set(`${id}:sl`, {
-          price: stopLoss,
+          price: sl,
           color: DOWN,
           lineWidth: 1,
           lineStyle: LineStyle.Dashed,
           axisLabelVisible: true,
           axisLabelColor: DOWN,
           axisLabelTextColor: "#ffffff",
-          title: `SL ${money(slPnl)}`,
+          title: `SL ${money((sl - entry) * direction * volume * contractSize)}`,
         });
       }
 
-      const takeProfit = toNumber(position.take_profit);
-
-      if (takeProfit && takeProfit > 0) {
-        const tpPnl = (takeProfit - entry) * direction * volume * contractSize;
-
+      const tp = toNumber(position.take_profit);
+      if (tp && tp > 0) {
         wanted.set(`${id}:tp`, {
-          price: takeProfit,
+          price: tp,
           color: UP,
           lineWidth: 1,
           lineStyle: LineStyle.Dashed,
           axisLabelVisible: true,
           axisLabelColor: UP,
           axisLabelTextColor: "#ffffff",
-          title: `TP ${money(tpPnl)}`,
+          title: `TP ${money((tp - entry) * direction * volume * contractSize)}`,
         });
-      }
-    });
-
-    /* remove lines of closed positions / removed SL-TP */
-    for (const [key, line] of Array.from(lines.entries())) {
-      if (!wanted.has(key)) {
-        try {
-          series.removePriceLine(line);
-        } catch {
-          /* already removed */
-        }
-
-        lines.delete(key);
       }
     }
 
-    /* create new lines, update existing ones in place */
-    for (const [key, options] of wanted) {
-      const existing = lines.get(key);
+    for (const [key, line] of existingLines) {
+      if (!wanted.has(key)) {
+        try {
+          series.removePriceLine(line);
+        } catch {}
+        existingLines.delete(key);
+      }
+    }
 
-      if (existing) {
-        existing.applyOptions(options);
+    for (const [key, options] of wanted) {
+      const line = existingLines.get(key);
+
+      if (line) {
+        line.applyOptions(options);
       } else {
-        lines.set(key, series.createPriceLine(options));
+        existingLines.set(
+          key,
+          series.createPriceLine(options),
+        );
       }
     }
   }, [openPositions, currentBid, currentAsk]);
 
-  /* position lines belong to one symbol: clear them when it changes */
+  // Clear old position lines when switching symbols.
   useEffect(() => {
-    const series = candleSeriesRef.current;
-    const lines = positionLinesRef.current;
-
     return () => {
-      if (!series) return;
+      const series = candleSeriesRef.current;
 
-      for (const line of lines.values()) {
-        try {
-          series.removePriceLine(line);
-        } catch {
-          /* already removed */
+      if (series) {
+        for (const line of positionLinesRef.current.values()) {
+          try {
+            series.removePriceLine(line);
+          } catch {}
         }
       }
 
-      lines.clear();
+      positionLinesRef.current.clear();
     };
   }, [symbol]);
 
-  /* ---------------- BUY / SELL ARROWS ---------------- */
-
+  // Trade markers on candles.
   useEffect(() => {
     const markers = markersRef.current;
-
     if (!markers || !frame) return;
 
     const list = [];
 
-    openPositions.forEach((position) => {
+    for (const position of openPositions) {
       const openedAt = new Date(position.opened_at).getTime();
-
-      if (!Number.isFinite(openedAt)) return;
+      if (!Number.isFinite(openedAt)) continue;
 
       const side = String(position.side || "").toUpperCase();
       const volume = toNumber(position.volume) || 0;
@@ -862,50 +837,56 @@ export default function TradingChart({
         color: side === "BUY" ? BUY_BLUE : DOWN,
         text: `${side} ${volume.toFixed(2)}`,
       });
-    });
+    }
 
     list.sort((a, b) => a.time - b.time);
 
     try {
       markers.setMarkers(list);
-    } catch {
-      /* marker time outside the loaded data */
+    } catch (e) {
+      console.warn("[TradeX Chart] Marker update failed:", e);
     }
   }, [openPositions, frame, lastCandle?.time]);
 
-  /* ---------------- refresh after the tab was hidden ---------------- */
-
+  // Refresh history after returning to the tab.
   useEffect(() => {
-    function onVisibility() {
+    function handleVisibility() {
       if (document.hidden) {
         hiddenAtRef.current = Date.now();
         return;
       }
 
-      if (hiddenAtRef.current && Date.now() - hiddenAtRef.current > 30000) {
-        setReloadKey((value) => value + 1);
+      if (
+        hiddenAtRef.current &&
+        Date.now() - hiddenAtRef.current > 30000
+      ) {
+        setReloadKey((key) => key + 1);
       }
 
       hiddenAtRef.current = 0;
     }
 
-    document.addEventListener("visibilitychange", onVisibility);
+    document.addEventListener("visibilitychange", handleVisibility);
 
-    return () => document.removeEventListener("visibilitychange", onVisibility);
+    return () => {
+      document.removeEventListener(
+        "visibilitychange",
+        handleVisibility,
+      );
+    };
   }, []);
 
-  /* ---------------- UI ---------------- */
-
   const shown = hoverCandle || lastCandle;
-
   const change = shown ? shown.close - shown.open : 0;
-  const changePercent = shown && shown.open ? (change / shown.open) * 100 : 0;
+  const changePercent =
+    shown?.open ? (change / shown.open) * 100 : 0;
   const trend = change >= 0 ? "up" : "down";
 
   const spread =
-    currentBid && currentAsk ? Math.max(currentAsk - currentBid, 0) : null;
+    currentBid > 0 && currentAsk > 0
+      ? Math.max(currentAsk - currentBid, 0)
+      : null;
 
-  /* gold / bitcoin: price units, forex: pips */
   const spreadText =
     spread === null
       ? "--"
@@ -918,14 +899,16 @@ export default function TradingChart({
   }
 
   function zoomBy(factor) {
-    const timeScale = chartRef.current?.timeScale();
+    const scale = chartRef.current?.timeScale();
+    if (!scale) return;
 
-    if (!timeScale) return;
+    const spacing = scale.options().barSpacing || BAR_SPACING;
 
-    const spacing = timeScale.options().barSpacing || BAR_SPACING;
-
-    timeScale.applyOptions({
-      barSpacing: Math.min(Math.max(spacing * factor, 2), 40),
+    scale.applyOptions({
+      barSpacing: Math.min(
+        Math.max(spacing * factor, 2),
+        40,
+      ),
     });
   }
 
@@ -955,11 +938,19 @@ export default function TradingChart({
         </div>
 
         <div className="tvc-actions">
-          <button type="button" title="Zoom out" onClick={() => zoomBy(0.8)}>
+          <button
+            type="button"
+            title="Zoom out"
+            onClick={() => zoomBy(0.8)}
+          >
             −
           </button>
 
-          <button type="button" title="Zoom in" onClick={() => zoomBy(1.25)}>
+          <button
+            type="button"
+            title="Zoom in"
+            onClick={() => zoomBy(1.25)}
+          >
             +
           </button>
 
@@ -973,9 +964,11 @@ export default function TradingChart({
 
           <button
             type="button"
-            title="Switch light / dark chart"
+            title="Switch chart theme"
             onClick={() =>
-              setTheme((value) => (value === "dark" ? "light" : "dark"))
+              setTheme((value) =>
+                value === "dark" ? "light" : "dark",
+              )
             }
           >
             {theme === "dark" ? "☀" : "☾"}
@@ -989,20 +982,20 @@ export default function TradingChart({
         <div className="tvc-overlay">
           <div className="tvc-legend">
             <span className="tvc-name">
-              {SYMBOL_NAMES[symbol] || symbol} · {timeframe.toUpperCase()} ·
-              TRADEX
+              {SYMBOL_NAMES[symbol] || symbol} ·{" "}
+              {timeframe.toUpperCase()} · TRADEX
             </span>
 
             {shown && (
               <span className={`tvc-ohlc ${trend}`}>
-                <b>O</b>
-                {shown.open.toFixed(digits)} <b>H</b>
-                {shown.high.toFixed(digits)} <b>L</b>
-                {shown.low.toFixed(digits)} <b>C</b>
-                {shown.close.toFixed(digits)}{" "}
+                <b>O</b> {shown.open.toFixed(digits)}{" "}
+                <b>H</b> {shown.high.toFixed(digits)}{" "}
+                <b>L</b> {shown.low.toFixed(digits)}{" "}
+                <b>C</b> {shown.close.toFixed(digits)}{" "}
                 <em>
                   {change >= 0 ? "+" : ""}
-                  {change.toFixed(digits)} ({changePercent >= 0 ? "+" : ""}
+                  {change.toFixed(digits)} (
+                  {changePercent >= 0 ? "+" : ""}
                   {changePercent.toFixed(2)}%)
                 </em>
               </span>
@@ -1014,9 +1007,13 @@ export default function TradingChart({
               type="button"
               className="tvc-sell"
               onClick={onSell}
-              disabled={!currentBid}
+              disabled={!currentBid || currentBid <= 0}
             >
-              <strong>{currentBid ? currentBid.toFixed(digits) : "--"}</strong>
+              <strong>
+                {currentBid > 0
+                  ? currentBid.toFixed(digits)
+                  : "--"}
+              </strong>
               <span>SELL</span>
             </button>
 
@@ -1026,9 +1023,13 @@ export default function TradingChart({
               type="button"
               className="tvc-buy"
               onClick={onBuy}
-              disabled={!currentAsk}
+              disabled={!currentAsk || currentAsk <= 0}
             >
-              <strong>{currentAsk ? currentAsk.toFixed(digits) : "--"}</strong>
+              <strong>
+                {currentAsk > 0
+                  ? currentAsk.toFixed(digits)
+                  : "--"}
+              </strong>
               <span>BUY</span>
             </button>
           </div>
@@ -1040,15 +1041,16 @@ export default function TradingChart({
           )}
         </div>
 
-        {loading && <div className="tvc-badge">Loading chart…</div>}
+        {loading && (
+          <div className="tvc-badge">Loading chart…</div>
+        )}
 
         {error && !loading && (
           <div className="tvc-badge error">
             {error}
-
             <button
               type="button"
-              onClick={() => setReloadKey((value) => value + 1)}
+              onClick={() => setReloadKey((key) => key + 1)}
             >
               Retry
             </button>
