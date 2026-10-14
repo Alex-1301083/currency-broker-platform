@@ -1,11 +1,4 @@
-
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
   createChart,
@@ -94,16 +87,12 @@ function cleanCandles(raw) {
 
   for (const item of raw || []) {
     const rawTime =
-      item.openTime ??
-      item.open_time ??
-      item.timestamp ??
-      item.time;
+      item.openTime ?? item.open_time ?? item.timestamp ?? item.time;
 
     let milliseconds;
 
     if (typeof rawTime === "number") {
-      milliseconds =
-        rawTime < 10_000_000_000 ? rawTime * 1000 : rawTime;
+      milliseconds = rawTime < 10_000_000_000 ? rawTime * 1000 : rawTime;
     } else {
       milliseconds = new Date(rawTime).getTime();
     }
@@ -119,11 +108,7 @@ function cleanCandles(raw) {
     const low = toNumber(item.low);
     const close = toNumber(item.close);
 
-    if (
-      [open, high, low, close].some(
-        (v) => v === null || v <= 0,
-      )
-    ) {
+    if ([open, high, low, close].some((v) => v === null || v <= 0)) {
       continue;
     }
 
@@ -516,10 +501,7 @@ export default function TradingChart({
           },
         );
 
-        if (
-          cancelled ||
-          requestId !== historyRequestRef.current
-        ) {
+        if (cancelled || requestId !== historyRequestRef.current) {
           return;
         }
 
@@ -656,8 +638,7 @@ export default function TradingChart({
       }
 
       setLive(
-        lastTickAtRef.current > 0 &&
-          Date.now() - lastTickAtRef.current < 15000,
+        lastTickAtRef.current > 0 && Date.now() - lastTickAtRef.current < 15000,
       );
     }, 500);
 
@@ -723,15 +704,11 @@ export default function TradingChart({
 
       if (!entry || entry <= 0) continue;
 
-      const exitPrice =
-        side === "BUY" ? currentBid : currentAsk;
+      const exitPrice = side === "BUY" ? currentBid : currentAsk;
 
       const pnl =
         exitPrice > 0
-          ? (exitPrice - entry) *
-            direction *
-            volume *
-            contractSize
+          ? (exitPrice - entry) * direction * volume * contractSize
           : toNumber(position.unrealized_pnl) || 0;
 
       const sideColor = side === "BUY" ? BUY_BLUE : DOWN;
@@ -741,7 +718,7 @@ export default function TradingChart({
         color: sideColor,
         lineWidth: 2,
         lineStyle: LineStyle.Solid,
-        axisLabelVisible: true,
+        axisLabelVisible: false,
         axisLabelColor: sideColor,
         axisLabelTextColor: "#ffffff",
         title: `${side} ${volume.toFixed(2)} ${money(pnl)}`,
@@ -754,7 +731,7 @@ export default function TradingChart({
           color: DOWN,
           lineWidth: 1,
           lineStyle: LineStyle.Dashed,
-          axisLabelVisible: true,
+          axisLabelVisible: false,
           axisLabelColor: DOWN,
           axisLabelTextColor: "#ffffff",
           title: `SL ${money((sl - entry) * direction * volume * contractSize)}`,
@@ -768,7 +745,7 @@ export default function TradingChart({
           color: UP,
           lineWidth: 1,
           lineStyle: LineStyle.Dashed,
-          axisLabelVisible: true,
+          axisLabelVisible: false,
           axisLabelColor: UP,
           axisLabelTextColor: "#ffffff",
           title: `TP ${money((tp - entry) * direction * volume * contractSize)}`,
@@ -791,10 +768,7 @@ export default function TradingChart({
       if (line) {
         line.applyOptions(options);
       } else {
-        existingLines.set(
-          key,
-          series.createPriceLine(options),
-        );
+        existingLines.set(key, series.createPriceLine(options));
       }
     }
   }, [openPositions, currentBid, currentAsk]);
@@ -856,10 +830,7 @@ export default function TradingChart({
         return;
       }
 
-      if (
-        hiddenAtRef.current &&
-        Date.now() - hiddenAtRef.current > 30000
-      ) {
+      if (hiddenAtRef.current && Date.now() - hiddenAtRef.current > 30000) {
         setReloadKey((key) => key + 1);
       }
 
@@ -869,17 +840,13 @@ export default function TradingChart({
     document.addEventListener("visibilitychange", handleVisibility);
 
     return () => {
-      document.removeEventListener(
-        "visibilitychange",
-        handleVisibility,
-      );
+      document.removeEventListener("visibilitychange", handleVisibility);
     };
   }, []);
 
   const shown = hoverCandle || lastCandle;
   const change = shown ? shown.close - shown.open : 0;
-  const changePercent =
-    shown?.open ? (change / shown.open) * 100 : 0;
+  const changePercent = shown?.open ? (change / shown.open) * 100 : 0;
   const trend = change >= 0 ? "up" : "down";
 
   const spread =
@@ -905,10 +872,7 @@ export default function TradingChart({
     const spacing = scale.options().barSpacing || BAR_SPACING;
 
     scale.applyOptions({
-      barSpacing: Math.min(
-        Math.max(spacing * factor, 2),
-        40,
-      ),
+      barSpacing: Math.min(Math.max(spacing * factor, 2), 40),
     });
   }
 
@@ -938,19 +902,11 @@ export default function TradingChart({
         </div>
 
         <div className="tvc-actions">
-          <button
-            type="button"
-            title="Zoom out"
-            onClick={() => zoomBy(0.8)}
-          >
+          <button type="button" title="Zoom out" onClick={() => zoomBy(0.8)}>
             −
           </button>
 
-          <button
-            type="button"
-            title="Zoom in"
-            onClick={() => zoomBy(1.25)}
-          >
+          <button type="button" title="Zoom in" onClick={() => zoomBy(1.25)}>
             +
           </button>
 
@@ -966,9 +922,7 @@ export default function TradingChart({
             type="button"
             title="Switch chart theme"
             onClick={() =>
-              setTheme((value) =>
-                value === "dark" ? "light" : "dark",
-              )
+              setTheme((value) => (value === "dark" ? "light" : "dark"))
             }
           >
             {theme === "dark" ? "☀" : "☾"}
@@ -982,20 +936,19 @@ export default function TradingChart({
         <div className="tvc-overlay">
           <div className="tvc-legend">
             <span className="tvc-name">
-              {SYMBOL_NAMES[symbol] || symbol} ·{" "}
-              {timeframe.toUpperCase()} · TRADEX
+              {SYMBOL_NAMES[symbol] || symbol} · {timeframe.toUpperCase()} ·
+              TRADEX
             </span>
 
             {shown && (
               <span className={`tvc-ohlc ${trend}`}>
-                <b>O</b> {shown.open.toFixed(digits)}{" "}
-                <b>H</b> {shown.high.toFixed(digits)}{" "}
-                <b>L</b> {shown.low.toFixed(digits)}{" "}
-                <b>C</b> {shown.close.toFixed(digits)}{" "}
+                <b>O</b> {shown.open.toFixed(digits)} <b>H</b>{" "}
+                {shown.high.toFixed(digits)} <b>L</b>{" "}
+                {shown.low.toFixed(digits)} <b>C</b>{" "}
+                {shown.close.toFixed(digits)}{" "}
                 <em>
                   {change >= 0 ? "+" : ""}
-                  {change.toFixed(digits)} (
-                  {changePercent >= 0 ? "+" : ""}
+                  {change.toFixed(digits)} ({changePercent >= 0 ? "+" : ""}
                   {changePercent.toFixed(2)}%)
                 </em>
               </span>
@@ -1010,9 +963,7 @@ export default function TradingChart({
               disabled={!currentBid || currentBid <= 0}
             >
               <strong>
-                {currentBid > 0
-                  ? currentBid.toFixed(digits)
-                  : "--"}
+                {currentBid > 0 ? currentBid.toFixed(digits) : "--"}
               </strong>
               <span>SELL</span>
             </button>
@@ -1026,9 +977,7 @@ export default function TradingChart({
               disabled={!currentAsk || currentAsk <= 0}
             >
               <strong>
-                {currentAsk > 0
-                  ? currentAsk.toFixed(digits)
-                  : "--"}
+                {currentAsk > 0 ? currentAsk.toFixed(digits) : "--"}
               </strong>
               <span>BUY</span>
             </button>
@@ -1041,9 +990,7 @@ export default function TradingChart({
           )}
         </div>
 
-        {loading && (
-          <div className="tvc-badge">Loading chart…</div>
-        )}
+        {loading && <div className="tvc-badge">Loading chart…</div>}
 
         {error && !loading && (
           <div className="tvc-badge error">
